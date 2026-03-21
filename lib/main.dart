@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -388,6 +389,90 @@ class _WebViewScreenState extends State<WebViewScreen> {
     }
   }
 
+  /// Registra handlers JavaScript para comunicação com a aplicação web
+  void _registerJavaScriptHandlers(InAppWebViewController controller) {
+    // Handler para salvar imagem em base64 para a galeria
+    controller.addJavaScriptHandler(
+      handlerName: 'saveImageToGallery',
+      callback: (args) async {
+        if (args.isEmpty) {
+          debugPrint('❌ saveImageToGallery: nenhum dado recebido');
+          return {'success': false, 'message': 'Nenhum dado recebido'};
+        }
+
+        final imageData = args[0]; // Esperado: { base64: '...', name: '...' }
+        return await _saveImageFromBase64(imageData);
+      },
+    );
+
+    // Handler para solicitar permissões
+    controller.addJavaScriptHandler(
+      handlerName: 'requestPhotosPermission',
+      callback: (args) async {
+        debugPrint('📷 Solicitando permissão de fotos...');
+        final status = await Permission.photos.request();
+        return {
+          'granted': status.isGranted,
+          'status': status.toString(),
+        };
+      },
+    );
+
+    debugPrint('✓ JavaScript handlers registrados');
+  }
+
+  /// Salva uma imagem em base64 para a galeria do dispositivo
+  Future<Map<String, dynamic>> _saveImageFromBase64(dynamic imageData) async {
+    try {
+      if (imageData is! Map) {
+        return {'success': false, 'message': 'Dados inválidos'};
+      }
+
+      final base64String = imageData['base64'] as String?;
+      final fileName = imageData['name'] as String? ?? 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+
+      if (base64String == null || base64String.isEmpty) {
+        return {'success': false, 'message': 'String base64 vazia'};
+      }
+
+      debugPrint('📸 Salvando imagem: $fileName');
+
+      // Decodifica a string base64 para bytes
+      final imageBytes = base64Decode(base64String);
+
+      // Obtém o caminho para o diretório de Documentos do app
+      final appDocDir = await getApplicationDocumentsDirectory();
+      final picturesPath = '${appDocDir.path}/Pictures';
+      final picturesDir = Directory(picturesPath);
+
+      // Cria o diretório se não existir
+      if (!await picturesDir.exists()) {
+        await picturesDir.create(recursive: true);
+        debugPrint('📁 Diretório criado: $picturesPath');
+      }
+
+      // Salva o arquivo
+      final filePath = '$picturesPath/$fileName';
+      final file = File(filePath);
+      await file.writeAsBytes(imageBytes);
+
+      debugPrint('✅ Imagem salva com sucesso: $filePath');
+      debugPrint('📊 Tamanho: ${imageBytes.length} bytes');
+
+      return {
+        'success': true,
+        'message': 'Imagem salva com sucesso',
+        'path': filePath,
+      };
+    } catch (e) {
+      debugPrint('❌ Erro ao salvar imagem: $e');
+      return {
+        'success': false,
+        'message': 'Erro ao salvar: $e',
+      };
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!_serverReady) {
@@ -438,6 +523,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
             onWebViewCreated: (controller) {
               _webViewController = controller;
               debugPrint('WebView created successfully');
+              _registerJavaScriptHandlers(controller);
             },
             onPermissionRequest: (controller, request) async {
               debugPrint('Permission request: ${request.resources}');
