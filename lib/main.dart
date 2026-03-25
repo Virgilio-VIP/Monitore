@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -262,7 +263,11 @@ class WebViewScreen extends StatefulWidget {
   State<WebViewScreen> createState() => _WebViewScreenState();
 }
 
-class _WebViewScreenState extends State<WebViewScreen> {
+class _WebViewScreenState extends State<WebViewScreen>
+    with WidgetsBindingObserver {
+  static const MethodChannel _galleryChannel = MethodChannel(
+    'com.mariamaia.maria_maia/gallery',
+  );
 
   InAppWebViewController? _webViewController;
   late InAppLocalhostServer _localhostServer;
@@ -271,7 +276,18 @@ class _WebViewScreenState extends State<WebViewScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _startServer();
+  }
+
+  /// Android WebView on some devices returns from camera without providing
+  /// files to the input element. We keep this hook but avoid synthetic polling
+  /// because it only adds noise when files are always empty.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('[LIFECYCLE] App resumed');
+    }
   }
 
   Future<void> _startServer() async {
@@ -325,6 +341,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _localhostServer.close();
     super.dispose();
   }
@@ -395,30 +412,50 @@ class _WebViewScreenState extends State<WebViewScreen> {
     controller.addJavaScriptHandler(
       handlerName: 'saveImageToGallery',
       callback: (args) async {
+        debugPrint('[HANDLER] saveImageToGallery: chamado');
+        developer.log(
+          '[HANDLER] saveImageToGallery: chamado',
+          name: 'PhotoBridge',
+        );
         if (args.isEmpty) {
-          debugPrint('❌ saveImageToGallery: nenhum dado recebido');
+          debugPrint('[HANDLER] saveImageToGallery: nenhum dado recebido');
+          developer.log(
+            '[HANDLER] saveImageToGallery: nenhum dado recebido',
+            name: 'PhotoBridge',
+          );
           return {'success': false, 'message': 'Nenhum dado recebido'};
         }
-
+        debugPrint('[HANDLER] saveImageToGallery: processando imagem...');
+        developer.log(
+          '[HANDLER] saveImageToGallery: processando imagem...',
+          name: 'PhotoBridge',
+        );
         final imageData = args[0]; // Esperado: { base64: '...', name: '...' }
         return await _saveImageFromBase64(imageData);
       },
     );
 
-    // Handler para solicitar permissões
+    // Handler para solicitar permissoes
     controller.addJavaScriptHandler(
       handlerName: 'requestPhotosPermission',
       callback: (args) async {
-        debugPrint('📷 Solicitando permissão de fotos...');
+        debugPrint('[HANDLER] requestPhotosPermission: chamado');
+        developer.log(
+          '[HANDLER] requestPhotosPermission: chamado',
+          name: 'PhotoBridge',
+        );
         final status = await Permission.photos.request();
-        return {
-          'granted': status.isGranted,
-          'status': status.toString(),
-        };
+        return {'granted': status.isGranted, 'status': status.toString()};
       },
     );
 
-    debugPrint('✓ JavaScript handlers registrados');
+    debugPrint(
+      '[HANDLER] Registrados: saveImageToGallery, requestPhotosPermission',
+    );
+    developer.log(
+      '[HANDLER] Registrados: saveImageToGallery, requestPhotosPermission',
+      name: 'PhotoBridge',
+    );
   }
 
   /// Salva uma imagem em base64 para a galeria do dispositivo
@@ -429,7 +466,9 @@ class _WebViewScreenState extends State<WebViewScreen> {
       }
 
       final base64String = imageData['base64'] as String?;
-      final fileName = imageData['name'] as String? ?? 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final fileName =
+          imageData['name'] as String? ??
+          'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
       if (base64String == null || base64String.isEmpty) {
         return {'success': false, 'message': 'String base64 vazia'};
@@ -440,23 +479,49 @@ class _WebViewScreenState extends State<WebViewScreen> {
       // Decodifica a string base64 para bytes
       final imageBytes = base64Decode(base64String);
 
-      // Obtém o caminho para o diretório de Documentos do app
+      if (Platform.isAndroid) {
+        final result = await _galleryChannel
+            .invokeMethod<Map<dynamic, dynamic>>('saveImageToGallery', {
+              'bytes': imageBytes,
+              'fileName': fileName,
+            });
+
+        final success = result?['success'] == true;
+        final savedPath = (result?['path'] ?? '').toString();
+
+        if (!success) {
+          debugPrint('❌ Falha ao salvar no gallery (Android): $result');
+          return {
+            'success': false,
+            'message': (result?['message'] ?? 'Falha ao salvar na galeria')
+                .toString(),
+            'result': result,
+          };
+        }
+
+        debugPrint('✅ Imagem salva com sucesso na galeria: $savedPath');
+        debugPrint('📊 Tamanho: ${imageBytes.length} bytes');
+
+        return {
+          'success': true,
+          'message': 'Imagem salva com sucesso na galeria',
+          'path': savedPath,
+          'result': result,
+        };
+      }
+
+      // Fallback for non-Android platforms.
       final appDocDir = await getApplicationDocumentsDirectory();
       final picturesPath = '${appDocDir.path}/Pictures';
       final picturesDir = Directory(picturesPath);
-
-      // Cria o diretório se não existir
       if (!await picturesDir.exists()) {
         await picturesDir.create(recursive: true);
-        debugPrint('📁 Diretório criado: $picturesPath');
       }
-
-      // Salva o arquivo
       final filePath = '$picturesPath/$fileName';
       final file = File(filePath);
       await file.writeAsBytes(imageBytes);
 
-      debugPrint('✅ Imagem salva com sucesso: $filePath');
+      debugPrint('✅ Imagem salva em fallback local: $filePath');
       debugPrint('📊 Tamanho: ${imageBytes.length} bytes');
 
       return {
@@ -466,10 +531,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
       };
     } catch (e) {
       debugPrint('❌ Erro ao salvar imagem: $e');
-      return {
-        'success': false,
-        'message': 'Erro ao salvar: $e',
-      };
+      return {'success': false, 'message': 'Erro ao salvar: $e'};
     }
   }
 
@@ -543,8 +605,78 @@ class _WebViewScreenState extends State<WebViewScreen> {
             onLoadStart: (controller, url) {
               debugPrint('WebView load started: $url');
             },
-            onLoadStop: (controller, url) {
+            onLoadStop: (controller, url) async {
               debugPrint('WebView load completed: $url');
+              // PhotoBridge v3: intercept FileReader.prototype.readAsDataURL.
+              // React reads every picked/captured image through FileReader – by
+              // patching the prototype we get the base64 data at the same time
+              // React does, with zero dependency on DOM change events.
+              await controller.evaluateJavascript(
+                source: r'''
+(function() {
+  if (window._photoBridgeInstalled) return;
+  window._photoBridgeInstalled = true;
+
+  // 1. Intercept FileReader so we piggyback on React's own read
+  var _origRead = FileReader.prototype.readAsDataURL;
+  FileReader.prototype.readAsDataURL = function(blob) {
+    if (blob && blob.type && blob.type.startsWith('image/')) {
+      var self = this;
+      var fileName = (blob && blob.name) ? blob.name : ('photo_' + Date.now() + '.jpg');
+      self.addEventListener('load', function onPBLoad() {
+        self.removeEventListener('load', onPBLoad);
+        var raw = self.result;
+        var b64 = (raw && raw.indexOf(',') >= 0) ? raw.split(',')[1] : raw;
+        if (!b64) return;
+        var kb = Math.round(b64.length * 0.75 / 1024);
+        console.log('[PhotoBridge] intercepted: ' + fileName + ' (' + kb + ' KB)');
+        if (window.flutter_inappwebview) {
+          window.flutter_inappwebview
+            .callHandler('saveImageToGallery', {base64: b64, name: fileName})
+            .then(function(r){ console.log('[PhotoBridge] OK: ' + JSON.stringify(r)); })
+            .catch(function(e){ console.error('[PhotoBridge] Erro:', e); });
+        } else {
+          console.warn('[PhotoBridge] flutter_inappwebview nao encontrado');
+        }
+      });
+    }
+    return _origRead.call(this, blob);
+  };
+
+  // 2. Patch file inputs without forcing capture.
+  // For Samsung/Android WebView, capture="environment" frequently returns
+  // empty FileList. Keeping chooser mode improves reliability.
+  function patchInputs() {
+    document.querySelectorAll('input[type="file"]').forEach(function(el) {
+      if (el.hasAttribute('capture')) el.removeAttribute('capture');
+    });
+  }
+  patchInputs();
+  new MutationObserver(patchInputs)
+    .observe(document.documentElement, {childList:true, subtree:true});
+
+  // 3. Debug helper
+  window.PhotoBridgeDebug = {
+    version: '3.1',
+    status: function() {
+      var all = document.querySelectorAll('input[type="file"]');
+      var ok = !!(window.flutter_inappwebview);
+      console.log('=== PhotoBridge Status ===\nVersion: 3.1 (FileReader intercept, chooser mode)\nInputs: '+all.length+'\nFlutter: '+(ok?'AVAILABLE':'NOT FOUND')+'\n=========================');
+      return {version:'3.1', inputs:all.length, flutterReady:ok};
+    },
+    testCapture: function() {
+      var el = document.querySelector('input[type="file"]');
+      if (!el) { console.warn('[PhotoBridge] Nenhum input. Va para a tela de camera primeiro.'); return false; }
+      console.log('[PhotoBridge] testCapture -> click()'); el.click(); return true;
+    }
+  };
+
+  console.log('=== PhotoBridge READY (v3.1) ===');
+  console.log('Modo: FileReader intercept + chooser (sem capture forcado)');
+  console.log('Debug: window.PhotoBridgeDebug.status() | .testCapture()');
+})();
+              ''',
+              );
             },
             onConsoleMessage: (controller, consoleMessage) {
               debugPrint('WebView Console: ${consoleMessage.message}');

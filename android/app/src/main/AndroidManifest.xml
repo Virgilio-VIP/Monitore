@@ -38,10 +38,10 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- Provider for file sharing (WebView file uploads) -->
+        <!-- Single FileProvider serving both app and flutter_inappwebview authorities -->
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
+            android:authorities="${applicationId}.fileprovider;${applicationId}.flutter_inappwebview_android.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data
