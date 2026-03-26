@@ -267,6 +267,9 @@ class _WebViewScreenState extends State<WebViewScreen> {
     'com.mariamaia.maria_maia/gallery',
   );
 
+  final Map<String, StringBuffer> _jsonChunkBuffers = {};
+  final Map<String, String> _jsonChunkFileNames = {};
+
   InAppWebViewController? _webViewController;
   late InAppLocalhostServer _localhostServer;
   bool _serverReady = false;
@@ -415,6 +418,86 @@ class _WebViewScreenState extends State<WebViewScreen> {
         return {'granted': status.isGranted, 'status': status.toString()};
       },
     );
+
+    // Handler para salvar JSON de planejamento em Documents
+    controller.addJavaScriptHandler(
+      handlerName: 'saveJsonToDocuments',
+      callback: (args) async {
+        if (args.isEmpty) {
+          debugPrint('saveJsonToDocuments: nenhum dado recebido');
+          return {'success': false, 'message': 'Nenhum dado recebido'};
+        }
+        final jsonData =
+            args[0]; // Esperado: { jsonContent: '...', fileName: '...' }
+        return await _saveJsonFromWeb(jsonData);
+      },
+    );
+
+    // Handlers para envio chunked de JSON grande (evita limite de payload)
+    controller.addJavaScriptHandler(
+      handlerName: 'saveJsonStart',
+      callback: (args) async {
+        if (args.isEmpty || args[0] is! Map) {
+          return {'success': false, 'message': 'Dados inválidos'};
+        }
+        final data = args[0] as Map;
+        final sessionId = (data['sessionId'] ?? '').toString();
+        final fileName = (data['fileName'] ?? '').toString();
+
+        if (sessionId.isEmpty) {
+          return {'success': false, 'message': 'sessionId ausente'};
+        }
+
+        _jsonChunkBuffers[sessionId] = StringBuffer();
+        _jsonChunkFileNames[sessionId] = fileName;
+        debugPrint('saveJsonStart: session=$sessionId file=$fileName');
+        return {'success': true};
+      },
+    );
+
+    controller.addJavaScriptHandler(
+      handlerName: 'saveJsonChunk',
+      callback: (args) async {
+        if (args.isEmpty || args[0] is! Map) {
+          return {'success': false, 'message': 'Dados inválidos'};
+        }
+        final data = args[0] as Map;
+        final sessionId = (data['sessionId'] ?? '').toString();
+        final chunk = (data['chunk'] ?? '').toString();
+
+        final buffer = _jsonChunkBuffers[sessionId];
+        if (sessionId.isEmpty || buffer == null) {
+          return {'success': false, 'message': 'Sessão inexistente'};
+        }
+
+        buffer.write(chunk);
+        return {'success': true};
+      },
+    );
+
+    controller.addJavaScriptHandler(
+      handlerName: 'saveJsonFinish',
+      callback: (args) async {
+        if (args.isEmpty || args[0] is! Map) {
+          return {'success': false, 'message': 'Dados inválidos'};
+        }
+        final data = args[0] as Map;
+        final sessionId = (data['sessionId'] ?? '').toString();
+        final buffer = _jsonChunkBuffers.remove(sessionId);
+        final fileName = _jsonChunkFileNames.remove(sessionId);
+
+        if (sessionId.isEmpty || buffer == null) {
+          return {'success': false, 'message': 'Sessão inexistente'};
+        }
+
+        debugPrint('saveJsonFinish: session=$sessionId bytes=${buffer.length}');
+
+        return await _saveJsonFromWeb({
+          'jsonContent': buffer.toString(),
+          'fileName': fileName,
+        });
+      },
+    );
   }
 
   /// Salva uma imagem em base64 para a galeria do dispositivo
@@ -489,6 +572,95 @@ class _WebViewScreenState extends State<WebViewScreen> {
     } catch (e) {
       debugPrint('Erro ao salvar imagem: $e');
       return {'success': false, 'message': 'Erro ao salvar: $e'};
+    }
+  }
+
+  /// Salva o JSON exportado da web app em Documents no Android
+  Future<Map<String, dynamic>> _saveJsonFromWeb(dynamic jsonData) async {
+    try {
+      if (jsonData is! Map) {
+        return {'success': false, 'message': 'Dados inválidos'};
+      }
+
+      final jsonContent = jsonData['jsonContent'] as String?;
+      var fileName =
+          jsonData['fileName'] as String? ??
+          'plano-nutricional-${DateTime.now().millisecondsSinceEpoch}.json';
+
+      if (jsonContent == null || jsonContent.isEmpty) {
+        return {'success': false, 'message': 'Conteúdo JSON vazio'};
+      }
+
+      if (!fileName.toLowerCase().endsWith('.json')) {
+        fileName = '$fileName.json';
+      }
+
+      if (Platform.isAndroid) {
+        final result = await _galleryChannel
+            .invokeMethod<Map<dynamic, dynamic>>('saveJsonToDocuments', {
+              'jsonContent': jsonContent,
+              'fileName': fileName,
+            });
+
+        final success = result?['success'] == true;
+        final savedPath = (result?['path'] ?? '').toString();
+
+        if (!success) {
+          debugPrint('Falha ao salvar JSON (Android): $result');
+          return {
+            'success': false,
+            'message': (result?['message'] ?? 'Falha ao salvar JSON')
+                .toString(),
+            'result': result,
+          };
+        }
+
+        debugPrint('JSON salvo com sucesso: $savedPath');
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('JSON salvo em: $savedPath'),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+
+        return {
+          'success': true,
+          'message': 'JSON salvo com sucesso',
+          'path': savedPath,
+          'result': result,
+        };
+      }
+
+      // Fallback para outras plataformas
+      final appDocDir = await getApplicationDocumentsDirectory();
+      final exportsDir = Directory('${appDocDir.path}/Exports');
+      if (!await exportsDir.exists()) {
+        await exportsDir.create(recursive: true);
+      }
+      final filePath = '${exportsDir.path}/$fileName';
+      final file = File(filePath);
+      await file.writeAsString(jsonContent);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('JSON salvo em: $filePath'),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+
+      return {
+        'success': true,
+        'message': 'JSON salvo com sucesso',
+        'path': filePath,
+      };
+    } catch (e) {
+      debugPrint('Erro ao salvar JSON: $e');
+      return {'success': false, 'message': 'Erro ao salvar JSON: $e'};
     }
   }
 
@@ -637,6 +809,310 @@ class _WebViewScreenState extends State<WebViewScreen> {
       pbLog('[PhotoBridge] testCapture -> click()'); el.click(); return true;
     }
   };
+})();
+
+(function() {
+  if (window._jsonBridgeInstalled) return;
+  window._jsonBridgeInstalled = true;
+  console.log('[JsonBridge] installed');
+
+  var JSON_CHUNK_SIZE = 180000;
+
+  function sendJsonChunked(jsonText, fileName) {
+    var sessionId = 'json_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    var total = Math.ceil(jsonText.length / JSON_CHUNK_SIZE);
+
+    // Chunked approach: Fire all chunks in PARALLEL for maximum speed
+    return window.flutter_inappwebview.callHandler('saveJsonStart', {
+      sessionId: sessionId,
+      fileName: fileName,
+      totalChunks: total
+    }).then(function(startRes) {
+      if (!startRes || startRes.success !== true) {
+        throw new Error((startRes && startRes.message) ? startRes.message : 'Falha ao iniciar sessao JSON');
+      }
+
+      // Create all chunk calls at once
+      var chunkCalls = [];
+      for (var i = 0; i < total; i++) {
+        var begin = i * JSON_CHUNK_SIZE;
+        var end = Math.min(begin + JSON_CHUNK_SIZE, jsonText.length);
+        var chunk = jsonText.slice(begin, end);
+        
+        chunkCalls.push(
+          window.flutter_inappwebview.callHandler('saveJsonChunk', {
+            sessionId: sessionId,
+            chunk: chunk,
+            index: i,
+            total: total
+          }).then(function(chunkRes) {
+            if (!chunkRes || chunkRes.success !== true) {
+              throw new Error((chunkRes && chunkRes.message) ? chunkRes.message : 'Falha no chunk ' + i);
+            }
+          })
+        );
+      }
+
+      // Send ALL chunks in parallel, wait for all to complete
+      console.log('[JsonBridge] Sending ' + total + ' chunks in parallel');
+      return Promise.all(chunkCalls).then(function() {
+        console.log('[JsonBridge] All chunks sent, finishing...');
+        return window.flutter_inappwebview.callHandler('saveJsonFinish', {
+          sessionId: sessionId
+        });
+      });
+    });
+  }
+
+  function sendJsonToFlutter(jsonText, fileName) {
+    if (!jsonText || !window.flutter_inappwebview) {
+      return Promise.reject(new Error('Bridge indisponivel para salvar JSON'));
+    }
+
+    var finalFileName = fileName || ('plano-nutricional-' + Date.now() + '.json');
+    return sendJsonChunked(jsonText, finalFileName);
+  }
+
+  // Source-level fallback: capture planning JSON at creation time.
+  // This bypasses dependency on navigator.share/Capacitor/blob click behavior.
+  try {
+    if (!window._mmJsonStringifyPatched) {
+      window._mmJsonStringifyPatched = true;
+      var originalStringify = JSON.stringify;
+      var lastPayloadSignature = '';
+
+      JSON.stringify = function(value, replacer, space) {
+        var result = originalStringify.apply(JSON, arguments);
+        try {
+          var looksLikePlanningPayload =
+            value &&
+            typeof value === 'object' &&
+            Array.isArray(value.PLANEJAMENTO) &&
+            Array.isArray(value.LOTES_SELECIONADOS) &&
+            Array.isArray(value.LOCAIS);
+
+          if (looksLikePlanningPayload && typeof result === 'string' && result.length > 10) {
+            var signature = String(result.length) + ':' + result.slice(0, 80);
+            if (signature !== lastPayloadSignature) {
+              lastPayloadSignature = signature;
+
+              var planningId = null;
+              try {
+                for (var i = 0; i < value.PLANEJAMENTO.length; i++) {
+                  var row = value.PLANEJAMENTO[i];
+                  if (row && row.TAG === 'ID_PLANEJAMENTO') {
+                    planningId = row.RESPOSTA;
+                    break;
+                  }
+                }
+              } catch (_) {}
+
+              var fileName = planningId
+                ? ('plano-nutricional-' + planningId + '.json')
+                : ('plano-nutricional-' + Date.now() + '.json');
+
+              console.log('[JsonBridge] planning payload captured via JSON.stringify:', fileName, 'bytes=' + result.length);
+              sendJsonToFlutter(result, fileName).catch(function(err) {
+                console.error('[JsonBridge] stringify fallback failed:', err);
+              });
+            }
+          }
+        } catch (err) {
+          console.error('[JsonBridge] erro no hook JSON.stringify:', err);
+        }
+        return result;
+      };
+      console.log('[JsonBridge] JSON.stringify patched');
+    }
+  } catch (err) {
+    console.error('[JsonBridge] patch JSON.stringify falhou:', err);
+  }
+
+  function patchNavigatorShare() {
+    try {
+      if (!(navigator && typeof navigator.share === 'function')) {
+        return false;
+      }
+      if (navigator._mmSharePatched) {
+        return true;
+      }
+
+      var originalShare = navigator.share.bind(navigator);
+      navigator.share = function(shareData) {
+        try {
+          var files = shareData && shareData.files;
+          if (files && files.length) {
+            for (var i = 0; i < files.length; i++) {
+              var file = files[i];
+              var name = file && file.name ? String(file.name) : '';
+              var type = file && file.type ? String(file.type).toLowerCase() : '';
+              var isJson = name.toLowerCase().endsWith('.json') || type.indexOf('application/json') >= 0;
+              if (isJson && typeof file.text === 'function') {
+                console.log('[JsonBridge] navigator.share JSON file intercepted:', name || '<sem_nome>');
+                return file.text().then(function(text) {
+                  return sendJsonToFlutter(text, name);
+                }).then(function() {
+                  return originalShare(shareData);
+                }).catch(function(err) {
+                  console.error('[JsonBridge] navigator.share intercept falhou:', err);
+                  return originalShare(shareData);
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.error('[JsonBridge] erro no patch navigator.share:', err);
+        }
+        return originalShare(shareData);
+      };
+      navigator._mmSharePatched = true;
+      console.log('[JsonBridge] navigator.share patched');
+      return true;
+    } catch (err) {
+      console.error('[JsonBridge] patch navigator.share falhou:', err);
+      return false;
+    }
+  }
+
+  function patchCapacitorNativePromise() {
+    try {
+      var cap = window.Capacitor;
+      if (!(cap && typeof cap.nativePromise === 'function')) {
+        return false;
+      }
+      if (cap._mmNativePromisePatched) {
+        return true;
+      }
+
+      var originalNativePromise = cap.nativePromise.bind(cap);
+      cap.nativePromise = function(pluginName, methodName, options) {
+        var resultPromise = originalNativePromise(pluginName, methodName, options);
+
+        try {
+          if (pluginName === 'Filesystem' && methodName === 'writeFile') {
+            var path = (options && options.path ? String(options.path) : '');
+            var data = options && options.data;
+            var isJsonPath = path.toLowerCase().endsWith('.json');
+            var isStringData = typeof data === 'string';
+            var trimmed = isStringData ? data.trim() : '';
+            var looksLikeJson = isStringData && (trimmed.startsWith('{') || trimmed.startsWith('['));
+
+            console.log('[JsonBridge] Filesystem.writeFile observed:', path || '<sem_path>');
+
+            if (isJsonPath && looksLikeJson) {
+              sendJsonToFlutter(data, path)
+                .then(function(r) {
+                  if (!r || r.success !== true) {
+                    throw new Error((r && r.message) ? r.message : 'Falha ao salvar JSON');
+                  }
+                  console.log('[JsonBridge] JSON salvo em Documents:', r.path || r.message);
+                })
+                .catch(function(err) {
+                  console.error('[JsonBridge] falha ao salvar JSON (nativePromise):', err);
+                });
+            }
+          }
+        } catch (err) {
+          console.error('[JsonBridge] erro ao processar nativePromise:', err);
+        }
+
+        return resultPromise;
+      };
+      cap._mmNativePromisePatched = true;
+      console.log('[JsonBridge] Capacitor.nativePromise patched');
+      return true;
+    } catch (err) {
+      console.error('[JsonBridge] patch nativePromise falhou:', err);
+      return false;
+    }
+  }
+
+  var patchAttempts = 0;
+  var patchTimer = setInterval(function() {
+    patchAttempts += 1;
+    var shareReady = patchNavigatorShare();
+    var nativeReady = patchCapacitorNativePromise();
+
+    if (patchAttempts === 1 || patchAttempts % 5 === 0) {
+      console.log('[JsonBridge] patch status attempt=' + patchAttempts + ' share=' + shareReady + ' native=' + nativeReady + ' hasCap=' + (!!window.Capacitor));
+    }
+
+    if (shareReady && nativeReady) {
+      clearInterval(patchTimer);
+      console.log('[JsonBridge] all patches active');
+    }
+
+    if (patchAttempts >= 40) {
+      clearInterval(patchTimer);
+      console.warn('[JsonBridge] patch timeout share=' + shareReady + ' native=' + nativeReady + ' hasCap=' + (!!window.Capacitor));
+    }
+  }, 250);
+
+  // 2) Intercept blob downloads fallback (web behavior)
+  if (!window.URL || !window.URL.createObjectURL || !window.URL.revokeObjectURL) {
+    return;
+  }
+
+  var originalCreateObjectURL = window.URL.createObjectURL.bind(window.URL);
+  var originalRevokeObjectURL = window.URL.revokeObjectURL.bind(window.URL);
+  var blobRegistry = {};
+
+  window.URL.createObjectURL = function(obj) {
+    var url = originalCreateObjectURL(obj);
+    try {
+      if (obj instanceof Blob) {
+        blobRegistry[url] = obj;
+      }
+    } catch (_) {}
+    return url;
+  };
+
+  window.URL.revokeObjectURL = function(url) {
+    delete blobRegistry[url];
+    return originalRevokeObjectURL(url);
+  };
+
+  document.addEventListener('click', function(event) {
+    var anchor = event.target && event.target.closest ? event.target.closest('a[download]') : null;
+    if (!anchor) return;
+
+    if (anchor.dataset.mmJsonBridgeBypass === '1') {
+      anchor.dataset.mmJsonBridgeBypass = '0';
+      return;
+    }
+
+    var href = anchor.getAttribute('href') || '';
+    var downloadName = (anchor.getAttribute('download') || '').trim();
+    var isBlobDownload = href.indexOf('blob:') === 0;
+    var isJsonName = downloadName.toLowerCase().endsWith('.json');
+
+    if (!isBlobDownload && !isJsonName) return;
+
+    var blob = blobRegistry[href];
+    if (!blob) return;
+
+    var blobType = (blob.type || '').toLowerCase();
+    if (!blobType.includes('application/json') && !isJsonName) return;
+
+    event.preventDefault();
+
+    blob.text().then(function(jsonText) {
+      var fileName = downloadName || ('plano-nutricional-' + Date.now() + '.json');
+      return sendJsonToFlutter(jsonText, fileName);
+    }).then(function(response) {
+      if (!response || response.success !== true) {
+        throw new Error((response && response.message) ? response.message : 'Falha ao salvar JSON');
+      }
+      console.log('[JsonBridge] JSON salvo com sucesso:', response.path || response.message);
+    }).catch(function(error) {
+      console.error('[JsonBridge] erro ao salvar JSON no dispositivo:', error);
+      // Reexecuta o fluxo original de download como fallback.
+      anchor.dataset.mmJsonBridgeBypass = '1';
+      try {
+        anchor.click();
+      } catch (_) {}
+    });
+  }, true);
 })();
               ''',
               );

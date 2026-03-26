@@ -2,10 +2,13 @@ package com.mariamaia.maria_maia
 
 import android.content.ContentValues
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
+import android.widget.Toast
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 import java.io.OutputStream
 
 class MainActivity : FlutterActivity() {
@@ -100,9 +103,116 @@ class MainActivity : FlutterActivity() {
 						}
 					}
 
+					"saveJsonToGallery", "saveJsonToDocuments" -> {
+						try {
+							val jsonContent = call.argument<String>("jsonContent")
+							val fileNameArg = call.argument<String>("fileName")
+
+							if (jsonContent.isNullOrBlank()) {
+								result.success(
+									mapOf(
+										"success" to false,
+										"message" to "Conteudo JSON vazio"
+									)
+								)
+								return@setMethodCallHandler
+							}
+
+							val fileName = if (fileNameArg.isNullOrBlank()) {
+								"plano-nutricional_${System.currentTimeMillis()}.json"
+							} else {
+								if (fileNameArg.lowercase().endsWith(".json")) fileNameArg else "$fileNameArg.json"
+							}
+
+							result.success(saveJsonToDocuments(jsonContent, fileName))
+						} catch (e: Exception) {
+							result.success(
+								mapOf(
+									"success" to false,
+									"message" to "Erro ao salvar JSON: ${e.message}"
+								)
+							)
+						}
+					}
+
 					else -> result.notImplemented()
 				}
 			}
+	}
+
+	private fun saveJsonToDocuments(jsonContent: String, fileName: String): Map<String, Any> {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+			val values = ContentValues().apply {
+				put(MediaStore.Files.FileColumns.DISPLAY_NAME, fileName)
+				put(MediaStore.Files.FileColumns.MIME_TYPE, "application/json")
+				put(MediaStore.Files.FileColumns.RELATIVE_PATH, "Documents/maria_maia")
+				put(MediaStore.Files.FileColumns.IS_PENDING, 1)
+			}
+
+			val resolver = applicationContext.contentResolver
+			val uri = resolver.insert(MediaStore.Files.getContentUri("external"), values)
+				?: return mapOf(
+					"success" to false,
+					"message" to "Falha ao criar entrada em Documents/maria_maia"
+				)
+
+			var outputStream: OutputStream? = null
+			try {
+				outputStream = resolver.openOutputStream(uri)
+					?: return mapOf(
+						"success" to false,
+						"message" to "Falha ao abrir stream do arquivo"
+					)
+
+				outputStream.write(jsonContent.toByteArray(Charsets.UTF_8))
+				outputStream.flush()
+			} finally {
+				outputStream?.close()
+			}
+
+			val publishValues = ContentValues().apply {
+				put(MediaStore.Files.FileColumns.IS_PENDING, 0)
+			}
+			resolver.update(uri, publishValues, null, null)
+			runOnUiThread {
+				Toast.makeText(
+					this,
+					"JSON salvo em Documents/maria_maia",
+					Toast.LENGTH_LONG
+				).show()
+			}
+
+			return mapOf(
+				"success" to true,
+				"path" to "Documents/maria_maia/$fileName",
+				"uri" to uri.toString(),
+				"message" to "JSON salvo em Documents/maria_maia"
+			)
+		}
+
+		val documentsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+		val targetDir = File(documentsRoot, "maria_maia")
+		if (!targetDir.exists() && !targetDir.mkdirs()) {
+			return mapOf(
+				"success" to false,
+				"message" to "Nao foi possivel criar Documents/maria_maia"
+			)
+		}
+
+		val outFile = File(targetDir, fileName)
+		outFile.writeText(jsonContent, Charsets.UTF_8)
+		runOnUiThread {
+			Toast.makeText(
+				this,
+				"JSON salvo em Documents/maria_maia",
+				Toast.LENGTH_LONG
+			).show()
+		}
+		return mapOf(
+			"success" to true,
+			"path" to outFile.absolutePath,
+			"message" to "JSON salvo em Documents/maria_maia"
+		)
 	}
 }
 
