@@ -591,6 +591,13 @@ class _WebViewScreenState extends State<WebViewScreen> {
         return {'success': false, 'message': 'Conteúdo JSON vazio'};
       }
 
+      final processed = _sanitizeJsonAndExtractMedia(jsonContent);
+      final sanitizedJsonContent = (processed['jsonContent'] ?? jsonContent)
+          .toString();
+      final mediaFiles =
+          (processed['mediaFiles'] as List<Map<String, String>>?) ??
+          <Map<String, String>>[];
+
       if (!fileName.toLowerCase().endsWith('.json')) {
         fileName = '$fileName.json';
       }
@@ -598,7 +605,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
       if (Platform.isAndroid) {
         final result = await _galleryChannel
             .invokeMethod<Map<dynamic, dynamic>>('saveJsonToDocuments', {
-              'jsonContent': jsonContent,
+              'jsonContent': sanitizedJsonContent,
               'fileName': fileName,
             });
 
@@ -616,6 +623,12 @@ class _WebViewScreenState extends State<WebViewScreen> {
         }
 
         debugPrint('JSON salvo com sucesso: $savedPath');
+
+        await _sharePlanFilesOnWhatsApp(
+          fileName: fileName,
+          sanitizedJsonContent: sanitizedJsonContent,
+          mediaFiles: mediaFiles,
+        );
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -642,7 +655,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
       }
       final filePath = '${exportsDir.path}/$fileName';
       final file = File(filePath);
-      await file.writeAsString(jsonContent);
+      await file.writeAsString(sanitizedJsonContent);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -661,6 +674,149 @@ class _WebViewScreenState extends State<WebViewScreen> {
     } catch (e) {
       debugPrint('Erro ao salvar JSON: $e');
       return {'success': false, 'message': 'Erro ao salvar JSON: $e'};
+    }
+  }
+
+  Map<String, dynamic> _sanitizeJsonAndExtractMedia(String jsonContent) {
+    try {
+      final decoded = jsonDecode(jsonContent);
+      final mediaFiles = <Map<String, String>>[];
+
+      dynamic sanitizeNode(dynamic node) {
+        if (node is List) {
+          return node.map(sanitizeNode).toList();
+        }
+
+        if (node is Map) {
+          final mutable = <String, dynamic>{};
+          node.forEach((key, value) {
+            mutable[key.toString()] = value;
+          });
+
+          final tag = (mutable['TAG'] ?? '').toString();
+          if (tag == 'DADOS_MIDIA' && mutable['RESPOSTA'] is List) {
+            final resposta = mutable['RESPOSTA'] as List;
+            final sanitizedResposta = <Map<String, String>>[];
+
+            for (final item in resposta) {
+              if (item is Map) {
+                final name = (item['nome'] ?? '').toString();
+                final providedMime = (item['tipo'] ?? '').toString();
+                final mime = providedMime.isNotEmpty
+                    ? providedMime
+                    : _guessMimeTypeFromFileName(name);
+                final content = (item['conteudo'] ?? '').toString();
+
+                if (name.isNotEmpty && content.isNotEmpty) {
+                  mediaFiles.add({
+                    'fileName': name,
+                    'mimeType': mime,
+                    'base64': content,
+                  });
+                }
+
+                sanitizedResposta.add({'nome': name, 'tipo': mime});
+              }
+            }
+
+            mutable['RESPOSTA'] = sanitizedResposta;
+            return mutable;
+          }
+
+          final output = <String, dynamic>{};
+          mutable.forEach((key, value) {
+            output[key] = sanitizeNode(value);
+          });
+          return output;
+        }
+
+        return node;
+      }
+
+      final sanitizedJson = jsonEncode(sanitizeNode(decoded));
+      return {'jsonContent': sanitizedJson, 'mediaFiles': mediaFiles};
+    } catch (e) {
+      debugPrint('Falha ao sanitizar JSON de mídia: $e');
+      return {
+        'jsonContent': jsonContent,
+        'mediaFiles': <Map<String, String>>[],
+      };
+    }
+  }
+
+  String _guessMimeTypeFromFileName(String fileName) {
+    final lower = fileName.toLowerCase();
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (lower.endsWith('.png')) {
+      return 'image/png';
+    }
+    if (lower.endsWith('.webp')) {
+      return 'image/webp';
+    }
+    if (lower.endsWith('.gif')) {
+      return 'image/gif';
+    }
+    if (lower.endsWith('.mp4')) {
+      return 'video/mp4';
+    }
+    return 'application/octet-stream';
+  }
+
+  Future<void> _sharePlanFilesOnWhatsApp({
+    required String fileName,
+    required String sanitizedJsonContent,
+    required List<Map<String, String>> mediaFiles,
+  }) async {
+    if (!Platform.isAndroid) return;
+
+    try {
+      // Write all files to a temp dir so FileProvider can serve them to WhatsApp
+      final cacheDir = await getTemporaryDirectory();
+      final shareDir = Directory('${cacheDir.path}/share_temp');
+      if (await shareDir.exists()) {
+        await shareDir.delete(recursive: true);
+      }
+      await shareDir.create(recursive: true);
+
+      final filePaths = <String>[];
+
+      // JSON file
+      final jsonFile = File('${shareDir.path}/$fileName');
+      await jsonFile.writeAsString(sanitizedJsonContent);
+      filePaths.add(jsonFile.path);
+
+      // Media files
+      for (final media in mediaFiles) {
+        final name = media['fileName'] ?? '';
+        final base64Content = media['base64'] ?? '';
+        if (name.isEmpty || base64Content.isEmpty) continue;
+
+        try {
+          final cleanBase64 = base64Content.contains(',')
+              ? base64Content.split(',').last
+              : base64Content;
+          final bytes = base64Decode(cleanBase64);
+          final mediaFile = File('${shareDir.path}/$name');
+          await mediaFile.writeAsBytes(bytes);
+          filePaths.add(mediaFile.path);
+        } catch (e) {
+          debugPrint('Falha ao preparar mídia para compartilhamento $name: $e');
+        }
+      }
+
+      final shareResult = await _galleryChannel
+          .invokeMethod<Map<dynamic, dynamic>>('shareFilesViaFileProvider', {
+            'filePaths': filePaths,
+            'text': 'Plano nutricional: $fileName',
+          });
+
+      if (shareResult?['success'] != true) {
+        debugPrint('Falha ao abrir WhatsApp: $shareResult');
+      }
+    } catch (e) {
+      debugPrint('Erro ao compartilhar no WhatsApp: $e');
     }
   }
 
