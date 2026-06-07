@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Permitir conexões com domínios específicos de CDNs -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </domain-config>
+    
+    <!-- CDNs - HTTPS seguro -->
+    <domain-config>
+        <domain includeSubdomains="true">cdn.tailwindcss.com</domain>
+        <domain includeSubdomains="true">fonts.googleapis.com</domain>
+        <domain includeSubdomains="true">fonts.gstatic.com</domain>
+        <domain includeSubdomains="true">esm.sh</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

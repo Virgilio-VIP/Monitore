@@ -1,0 +1,45 @@
+name: monitore
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.4+5
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  webview_flutter: ^4.13.0
+  webview_flutter_android: ^4.10.0
+  webview_flutter_wkwebview: ^3.24.0
+  permission_handler: ^11.4.0
+  flutter_inappwebview: ^6.1.5
+  path_provider: ^2.1.5
+  url_launcher: ^6.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.12.0
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/icon.png"
+  remove_alpha_ios: true
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/www/
+    - assets/www/assets/
+    - assets/www/vendor/
+    - assets/www/vendor/fonts/
+    - shorebird.yaml

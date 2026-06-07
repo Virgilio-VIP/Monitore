@@ -1,0 +1,19 @@
+# Build IOS - Comandos clássicos
+    fvm flutter clean
+    pod deintegrate
+    fvm flutter pub get
+    pod repo update
+    rm Podfile.lock
+    pod install
+
+#SHOREBIRD
+
+# Release (MaterialIcons-Regular.otf incluído no binário : Para futuros patchs serem gerados mesmo se mudr ícones)
+shorebird release android --flutter-version 3.38.6 -- --no-tree-shake-icons
+shorebird release ios --flutter-version 3.38.6 -- --no-tree-shake-icons
+
+# Patch
+shorebird patch android -- --no-tree-shake-icons
+shorebird patch ios -- --no-tree-shake-icons
+
+# Alteração no pubspec.yaml sempre incrementar 3o. e 4o.  dígito (pacth version e build number)

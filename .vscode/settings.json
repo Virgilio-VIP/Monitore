@@ -1,0 +1,6 @@
+{
+  "dart.flutterSdkPath": ".fvm/versions/3.38.6",
+  "chat.tools.terminal.autoApprove": {
+    "fvm": true
+  }
+}

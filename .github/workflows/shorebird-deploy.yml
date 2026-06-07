@@ -1,0 +1,74 @@
+name: 🚀 Shorebird Deploy
+
+on:
+  push:
+    tags:
+      - 'patch-*'
+      - 'release-*'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.16.0'
+      
+      - name: Setup Shorebird
+        run: |
+          curl --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/shorebirdtech/shorebird/main/scripts/install.sh -sSf | bash
+          echo "$HOME/.shorebird/bin" >> $GITHUB_PATH
+      
+      - name: Get dependencies
+        run: flutter pub get
+      
+      - name: Determine deployment type
+        id: deploy
+        run: |
+          TAG=${{ github.ref }}
+          if [[ $TAG == *"patch"* ]]; then
+            echo "type=patch" >> $GITHUB_OUTPUT
+          else
+            echo "type=release" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Deploy Patch (Shorebird)
+        if: steps.deploy.outputs.type == 'patch'
+        env:
+          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+        run: |
+          shorebird patch android --release
+      
+      - name: Deploy Release
+        if: steps.deploy.outputs.type == 'release'
+        env:
+          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+        run: |
+          shorebird build apk --release
+      
+      - name: Upload to Play Store (Release only)
+        if: steps.deploy.outputs.type == 'release'
+        env:
+          PLAY_STORE_CONFIG: ${{ secrets.PLAY_STORE_CONFIG }}
+        run: |
+          echo "$PLAY_STORE_CONFIG" > play-store-key.json
+          # Usar bundletool ou internal_app_sharing aqui
+          echo "📱 APK pronto para upload manual em Google Play Console"
+
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: |
+            ## Deploy Info
+            - Type: ${{ steps.deploy.outputs.type }}
+            - Timestamp: ${{ github.event.head_commit.timestamp }}
+          draft: false
+          prerelease: false
