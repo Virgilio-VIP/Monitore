@@ -1,6 +1,7 @@
 package br.com.monitore.app
 
 import android.content.ClipData
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
@@ -89,6 +90,33 @@ class MainActivity : FlutterActivity() {
 							result.success(shareFilesViaFileProvider(filePaths, text))
 						} catch (e: Exception) {
 							result.success(mapOf("success" to false, "message" to "Erro ao compartilhar: ${e.message}"))
+						}
+					}
+
+					"listSavedPlans" -> {
+						try {
+							result.success(listSavedPlans())
+						} catch (e: Exception) {
+							result.success(emptyList<Map<String, Any>>())
+						}
+					}
+
+					"readSavedPlanFile" -> {
+						try {
+							val fileName = call.argument<String>("fileName") ?: ""
+							result.success(readSavedPlanFileContent(fileName))
+						} catch (e: Exception) {
+							result.success(mapOf("success" to false, "message" to "Erro: ${e.message}"))
+						}
+					}
+
+					"copyGalleryMediaToTemp" -> {
+						try {
+							val fileNames = call.argument<List<String>>("fileNames") ?: emptyList()
+							val destDir   = call.argument<String>("destDir") ?: ""
+							result.success(copyGalleryMediaToTemp(fileNames, destDir))
+						} catch (e: Exception) {
+							result.success(emptyMap<String, String>())
 						}
 					}
 
@@ -232,6 +260,135 @@ class MainActivity : FlutterActivity() {
 		} catch (e: Exception) {
 			mapOf("success" to false, "message" to "Falha ao iniciar compartilhamento: ${e.message}")
 		}
+	}
+
+	private fun listSavedPlans(): List<Map<String, Any>> {
+		val plans = mutableListOf<Map<String, Any>>()
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+			val collection = MediaStore.Files.getContentUri("external")
+			val projection  = arrayOf(
+				MediaStore.Files.FileColumns.DISPLAY_NAME,
+				MediaStore.Files.FileColumns.DATE_ADDED,
+				MediaStore.Files.FileColumns.SIZE
+			)
+			val selection     = "(${MediaStore.Files.FileColumns.RELATIVE_PATH} = ? OR " +
+				"${MediaStore.Files.FileColumns.RELATIVE_PATH} = ?) AND " +
+				"${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?"
+			val selectionArgs = arrayOf("Documents/monitore", "Documents/monitore/", "%.json")
+			val sortOrder     = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
+			contentResolver.query(collection, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
+				val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+				val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
+				val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+				while (cursor.moveToNext()) {
+					plans.add(mapOf(
+						"fileName" to cursor.getString(nameCol),
+						"dateMs"   to cursor.getLong(dateCol) * 1000L,
+						"size"     to cursor.getLong(sizeCol)
+					))
+				}
+			}
+		} else {
+			@Suppress("DEPRECATION")
+			val dir = File(
+				Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+				"monitore"
+			)
+			if (dir.exists()) {
+				dir.listFiles { f -> f.name.endsWith(".json") }
+					?.sortedByDescending { it.lastModified() }
+					?.forEach { f ->
+						plans.add(mapOf(
+							"fileName" to f.name,
+							"dateMs"   to f.lastModified(),
+							"size"     to f.length()
+						))
+					}
+			}
+		}
+		return plans
+	}
+
+	private fun readSavedPlanFileContent(fileName: String): Map<String, Any> {
+		if (fileName.isBlank()) return mapOf("success" to false, "message" to "Nome vazio")
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+			val collection    = MediaStore.Files.getContentUri("external")
+			val projection    = arrayOf(MediaStore.Files.FileColumns._ID)
+			val selection     = "(${MediaStore.Files.FileColumns.RELATIVE_PATH} = ? OR " +
+				"${MediaStore.Files.FileColumns.RELATIVE_PATH} = ?) AND " +
+				"${MediaStore.Files.FileColumns.DISPLAY_NAME} = ?"
+			val selectionArgs = arrayOf("Documents/monitore", "Documents/monitore/", fileName)
+			contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+				if (cursor.moveToFirst()) {
+					val id  = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID))
+					val uri = ContentUris.withAppendedId(collection, id)
+					contentResolver.openInputStream(uri)?.use { stream ->
+						return mapOf("success" to true, "content" to stream.bufferedReader(Charsets.UTF_8).readText())
+					}
+				}
+			}
+			return mapOf("success" to false, "message" to "Arquivo não encontrado: $fileName")
+		} else {
+			@Suppress("DEPRECATION")
+			val file = File(
+				Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+				"monitore/$fileName"
+			)
+			return if (file.exists()) {
+				mapOf("success" to true, "content" to file.readText(Charsets.UTF_8))
+			} else {
+				mapOf("success" to false, "message" to "Arquivo não encontrado: $fileName")
+			}
+		}
+	}
+
+	private fun copyGalleryMediaToTemp(fileNames: List<String>, destDirPath: String): Map<String, String> {
+		if (fileNames.isEmpty() || destDirPath.isBlank()) return emptyMap()
+		val destDir = File(destDirPath)
+		if (!destDir.exists()) destDir.mkdirs()
+		val result = mutableMapOf<String, String>()
+		for (name in fileNames) {
+			if (name.isBlank()) continue
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+				val collection    = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+				val projection    = arrayOf(MediaStore.Images.Media._ID)
+				val selection     = "(${MediaStore.Images.Media.RELATIVE_PATH} = ? OR " +
+					"${MediaStore.Images.Media.RELATIVE_PATH} = ?) AND " +
+					"${MediaStore.Images.Media.DISPLAY_NAME} = ?"
+				val selectionArgs = arrayOf("Pictures/Monitore", "Pictures/Monitore/", name)
+				contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+					if (cursor.moveToFirst()) {
+						val id  = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+						val uri = ContentUris.withAppendedId(collection, id)
+						val dst = File(destDir, name)
+						try {
+							contentResolver.openInputStream(uri)?.use { input ->
+								dst.outputStream().use { out -> input.copyTo(out) }
+								result[name] = dst.absolutePath
+							}
+						} catch (e: Exception) {
+							android.util.Log.w("Monitore", "copyGalleryMedia failed for $name: ${e.message}")
+						}
+					}
+				}
+			} else {
+				@Suppress("DEPRECATION")
+				val src = File(
+					Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+					"Monitore/$name"
+				)
+				if (src.exists()) {
+					try {
+						val dst = File(destDir, name)
+						src.copyTo(dst, overwrite = true)
+						result[name] = dst.absolutePath
+					} catch (e: Exception) {
+						android.util.Log.w("Monitore", "copyGalleryMedia (legacy) failed for $name: ${e.message}")
+					}
+				}
+			}
+		}
+		return result
 	}
 
 	private fun isPackageInstalled(packageName: String): Boolean {

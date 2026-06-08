@@ -311,6 +311,53 @@ class _WebViewScreenState extends State<WebViewScreen> {
         }
       },
     );
+
+    controller.addJavaScriptHandler(
+      handlerName: 'listSavedPlans',
+      callback: (args) async {
+        try {
+          if (!Platform.isAndroid) return <dynamic>[];
+          final result = await _galleryChannel.invokeMethod<List<dynamic>>(
+            'listSavedPlans', {},
+          );
+          return result ?? <dynamic>[];
+        } catch (e) {
+          debugPrint('[listSavedPlans] error: $e');
+          return <dynamic>[];
+        }
+      },
+    );
+
+    controller.addJavaScriptHandler(
+      handlerName: 'shareSavedPlan',
+      callback: (args) async {
+        if (args.isEmpty || args[0] is! Map) return {'success': false, 'message': 'Dados inválidos'};
+        final fileName = (args[0] as Map)['fileName']?.toString() ?? '';
+        if (fileName.isEmpty) return {'success': false, 'message': 'Nome do arquivo vazio'};
+        try {
+          if (!Platform.isAndroid) return {'success': false, 'message': 'Apenas Android'};
+          final readResult = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
+            'readSavedPlanFile', {'fileName': fileName},
+          );
+          if (readResult?['success'] != true) {
+            return {'success': false, 'message': (readResult?['message'] ?? 'Falha ao ler arquivo').toString()};
+          }
+          final jsonContent = readResult!['content'] as String;
+          final processed = _sanitizeJsonAndExtractMedia(jsonContent);
+          final sanitizedJson = (processed['jsonContent'] ?? jsonContent).toString();
+          final mediaFiles = (processed['mediaFiles'] as List<Map<String, String>>?) ?? [];
+          await _sharePlanFilesOnWhatsApp(
+            fileName: fileName,
+            sanitizedJsonContent: sanitizedJson,
+            mediaFiles: mediaFiles,
+          );
+          return {'success': true};
+        } catch (e) {
+          debugPrint('[shareSavedPlan] error: $e');
+          return {'success': false, 'message': e.toString()};
+        }
+      },
+    );
   }
 
   // ── Image save ───────────────────────────────────────────────────────
@@ -381,11 +428,6 @@ class _WebViewScreenState extends State<WebViewScreen> {
         if (!success) {
           return {'success': false, 'message': (result?['message'] ?? 'Falha ao salvar JSON').toString()};
         }
-        await _sharePlanFilesOnWhatsApp(
-          fileName: fileName,
-          sanitizedJsonContent: sanitizedJson,
-          mediaFiles: mediaFiles,
-        );
         return {'success': true, 'message': 'JSON salvo', 'path': (result?['path'] ?? '').toString()};
       }
 
@@ -590,7 +632,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
           }
         }
 
-        // 4. Gallery directory scan (may fail on Android 10+ due to scoped storage)
+        // 4. Gallery directory scan (Android < 11)
         if (!prepared) {
           try {
             final fromGallery = _findGalleryMedia(galleryByName: galleryByName, preferredName: safeName);
@@ -603,6 +645,34 @@ class _WebViewScreenState extends State<WebViewScreen> {
             }
           } catch (e) {
             debugPrint('[Share] gallery scan failed: $e');
+          }
+        }
+
+        // 5. MediaStore query via Kotlin — most reliable on Android 10+ where direct
+        //    path access may be blocked by scoped storage (works across sessions).
+        if (!prepared && Platform.isAndroid) {
+          try {
+            final copyResult = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
+              'copyGalleryMediaToTemp',
+              {'fileNames': [origName, safeName], 'destDir': shareDir.path},
+            );
+            if (copyResult != null) {
+              for (final entry in copyResult.entries) {
+                final path = entry.value?.toString() ?? '';
+                if (path.isNotEmpty && !seenPaths.contains(path)) {
+                  final f = File(path);
+                  if (await f.exists()) {
+                    preparedFiles.add(f);
+                    seenPaths.add(path);
+                    prepared = true;
+                    debugPrint('[Share] Used MediaStore for $safeName');
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            debugPrint('[Share] MediaStore copy failed for $safeName: $e');
           }
         }
 
@@ -728,7 +798,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
             },
             onLoadStop: (controller, url) async {
               debugPrint('WebView load completed: $url');
-              await controller.evaluateJavascript(source: _photoBridgeJs + _jsonBridgeJs);
+              await controller.evaluateJavascript(source: _photoBridgeJs + _jsonBridgeJs + _galleryOverlayJs);
             },
             onConsoleMessage: (controller, consoleMessage) {
               debugPrint('WebView Console: ${consoleMessage.message}');
@@ -1050,5 +1120,193 @@ const String _jsonBridgeJs = r'''
       });
     }, true);
   }
+})();
+''';
+
+// ── Gallery overlay — replaces the /gallery tab content with a list of
+//    all saved plans read from Documents/Monitore, with WhatsApp send buttons.
+const String _galleryOverlayJs = r'''
+(function() {
+  if (window._mmGalleryOvlInstalled) return;
+  window._mmGalleryOvlInstalled = true;
+
+  var OVL_ID = '_mmGalleryOvl';
+
+  function _esc(s) {
+    return String(s || '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  var WA_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>';
+
+  function _removeOverlay() {
+    var el = document.getElementById(OVL_ID);
+    if (el) el.remove();
+  }
+
+  function _createOverlay() {
+    _removeOverlay();
+    var ovl = document.createElement('div');
+    ovl.id = OVL_ID;
+    // z-index 40 sits below the React header/bottom-nav (typically z-50),
+    // padding-top/bottom compensates so content is not hidden under them.
+    ovl.style.cssText = [
+      'position:fixed;inset:0;z-index:40;overflow-y:auto;',
+      'background:#f8fafc;padding:72px 16px 80px;',
+      'font-family:Inter,system-ui,sans-serif;'
+    ].join('');
+    ovl.innerHTML = [
+      '<div style="max-width:480px;margin:0 auto">',
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">',
+          '<div>',
+            '<h2 style="font-size:16px;font-weight:700;color:#1e293b;margin:0 0 2px">Planejamentos Salvos</h2>',
+            '<p style="font-size:12px;color:#64748b;margin:0">Toque em Enviar para compartilhar via WhatsApp</p>',
+          '</div>',
+          '<button id="_mmRefreshBtn" style="',
+            'background:white;border:1px solid #e2e8f0;border-radius:8px;',
+            'padding:7px 12px;font-size:12px;color:#475569;cursor:pointer;',
+            'display:flex;align-items:center;gap:5px;flex-shrink:0',
+          '">',
+            '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">',
+              '<polyline points="23 4 23 10 17 10"/>',
+              '<polyline points="1 20 1 14 7 14"/>',
+              '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+            '</svg>',
+            'Atualizar',
+          '</button>',
+        '</div>',
+        '<div id="_mmPlanList">',
+          '<div style="text-align:center;color:#94a3b8;padding:40px 0;font-size:13px">Carregando...</div>',
+        '</div>',
+      '</div>'
+    ].join('');
+    document.body.appendChild(ovl);
+
+    document.getElementById('_mmRefreshBtn').addEventListener('click', _loadPlans);
+
+    // Event delegation for share buttons
+    ovl.addEventListener('click', function(e) {
+      var btn = e.target.closest ? e.target.closest('._mm-share-btn') : null;
+      if (!btn || btn.disabled) return;
+      var card = btn.closest ? btn.closest('._mm-plan-card') : null;
+      if (!card || !window.flutter_inappwebview) return;
+      var fileName = card.getAttribute('data-fname');
+      if (!fileName) return;
+      btn.disabled = true;
+      btn.textContent = '⏳ Preparando...';
+      window.flutter_inappwebview.callHandler('shareSavedPlan', {fileName: fileName})
+        .then(function() {
+          btn.disabled = false;
+          btn.innerHTML = WA_ICON + ' Enviar via WhatsApp';
+        })
+        .catch(function(err) {
+          btn.disabled = false;
+          btn.innerHTML = WA_ICON + ' Enviar via WhatsApp';
+          console.error('[Gallery] shareSavedPlan error:', err);
+        });
+    });
+
+    _loadPlans();
+  }
+
+  function _loadPlans() {
+    var list = document.getElementById('_mmPlanList');
+    if (!list) return;
+    list.innerHTML = '<div style="text-align:center;color:#94a3b8;padding:40px 0;font-size:13px">Carregando...</div>';
+    if (!window.flutter_inappwebview) {
+      list.innerHTML = '<div style="text-align:center;color:#ef4444;padding:40px 0;font-size:13px">Bridge Flutter indisponível</div>';
+      return;
+    }
+    window.flutter_inappwebview.callHandler('listSavedPlans', {})
+      .then(function(plans) {
+        _renderPlans(Array.isArray(plans) ? plans : []);
+      })
+      .catch(function(err) {
+        console.error('[Gallery] listSavedPlans error:', err);
+        var el = document.getElementById('_mmPlanList');
+        if (el) el.innerHTML = '<div style="text-align:center;color:#ef4444;padding:40px 0;font-size:13px">Erro ao carregar. Tente atualizar.</div>';
+      });
+  }
+
+  function _renderPlans(plans) {
+    var list = document.getElementById('_mmPlanList');
+    if (!list) return;
+    if (!plans.length) {
+      list.innerHTML = [
+        '<div style="text-align:center;padding:48px 24px">',
+          '<div style="font-size:44px;margin-bottom:14px">📋</div>',
+          '<p style="font-weight:600;color:#475569;margin:0 0 8px;font-size:15px">Nenhum planejamento salvo</p>',
+          '<p style="font-size:13px;color:#94a3b8;margin:0;line-height:1.5">',
+            'Finalize um planejamento na aba Plan<br>para que ele apareça aqui.',
+          '</p>',
+        '</div>'
+      ].join('');
+      return;
+    }
+    list.innerHTML = plans.map(function(p) {
+      var date = new Date(Number(p.dateMs) || 0);
+      var dateStr = date.toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit', year:'numeric'});
+      var timeStr = date.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+      var sizeKb  = ((Number(p.size) || 0) / 1024).toFixed(1);
+      var rawName = String(p.fileName || '').replace(/\.json$/i, '').replace(/^plano-nutricional-/, '');
+      var display = rawName.replace(/[-_]/g, ' ');
+      return [
+        '<div class="_mm-plan-card" data-fname="', _esc(p.fileName), '" style="',
+          'background:white;border-radius:12px;padding:16px;margin-bottom:12px;',
+          'box-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.04)">',
+          '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px">',
+            '<div style="width:38px;height:38px;background:#eff6ff;border-radius:8px;',
+              'display:flex;align-items:center;justify-content:center;flex-shrink:0">',
+              '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2">',
+                '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>',
+                '<polyline points="14 2 14 8 20 8"/>',
+                '<line x1="16" y1="13" x2="8" y2="13"/>',
+                '<line x1="16" y1="17" x2="8" y2="17"/>',
+              '</svg>',
+            '</div>',
+            '<div style="flex:1;min-width:0">',
+              '<div style="font-weight:600;color:#1e293b;font-size:14px;',
+                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">',
+                _esc(display),
+              '</div>',
+              '<div style="font-size:12px;color:#64748b;margin-top:3px">',
+                dateStr, ' às ', timeStr, ' · ', sizeKb, ' KB',
+              '</div>',
+            '</div>',
+          '</div>',
+          '<button class="_mm-share-btn" style="',
+            'width:100%;padding:11px;background:#25d366;color:white;border:none;',
+            'border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;',
+            'display:flex;align-items:center;justify-content:center;gap:7px">',
+            WA_ICON, ' Enviar via WhatsApp',
+          '</button>',
+        '</div>'
+      ].join('');
+    }).join('');
+  }
+
+  function _onRouteChange() {
+    if (window.location.pathname === '/gallery') {
+      _createOverlay();
+    } else {
+      _removeOverlay();
+    }
+  }
+
+  // Hook React Router's History API
+  var _origPush    = history.pushState;
+  var _origReplace = history.replaceState;
+  history.pushState = function() {
+    _origPush.apply(this, arguments);
+    setTimeout(_onRouteChange, 80);
+  };
+  history.replaceState = function() {
+    _origReplace.apply(this, arguments);
+    setTimeout(_onRouteChange, 80);
+  };
+  window.addEventListener('popstate', function() { setTimeout(_onRouteChange, 80); });
+
+  // Initial check after React has fully rendered
+  setTimeout(_onRouteChange, 350);
 })();
 ''';
