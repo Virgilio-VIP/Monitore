@@ -11,7 +11,9 @@ dependencies:
   flutter:
     sdk: flutter
 
+  archive: ^4.0.7
   cupertino_icons: ^1.0.8
+  image_picker: ^1.1.2
   webview_flutter: ^4.13.0
   webview_flutter_android: ^4.10.0
   webview_flutter_wkwebview: ^3.24.0
