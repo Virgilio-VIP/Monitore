@@ -8,7 +8,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
-import android.widget.Toast
 import androidx.core.content.FileProvider
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
@@ -178,9 +177,6 @@ class MainActivity : FlutterActivity() {
 				put(MediaStore.Files.FileColumns.IS_PENDING, 0)
 			}
 			resolver.update(uri, publishValues, null, null)
-			runOnUiThread {
-				Toast.makeText(this, "Planejamento salvo em Documents/monitore", Toast.LENGTH_LONG).show()
-			}
 			return mapOf("success" to true, "path" to "Documents/monitore/$fileName", "uri" to uri.toString())
 		}
 
@@ -191,9 +187,6 @@ class MainActivity : FlutterActivity() {
 		}
 		val outFile = File(targetDir, fileName)
 		outFile.writeText(jsonContent, Charsets.UTF_8)
-		runOnUiThread {
-			Toast.makeText(this, "Planejamento salvo em Documents/monitore", Toast.LENGTH_LONG).show()
-		}
 		return mapOf("success" to true, "path" to outFile.absolutePath)
 	}
 
@@ -219,8 +212,6 @@ class MainActivity : FlutterActivity() {
 		if (uris.isEmpty()) {
 			return mapOf("success" to false, "message" to "Nenhum URI valido para compartilhar")
 		}
-		val packageCandidates = listOf("com.whatsapp", "com.whatsapp.w4b")
-		val whatsappPackage = packageCandidates.firstOrNull { isPackageInstalled(it) }
 		val shareMimeType = if (uris.size == 1) {
 			contentResolver.getType(uris[0]) ?: "*/*"
 		} else {
@@ -229,37 +220,37 @@ class MainActivity : FlutterActivity() {
 		val uriClipData = ClipData.newUri(contentResolver, "Arquivos do planejamento", uris.first()).apply {
 			for (index in 1 until uris.size) addItem(ClipData.Item(uris[index]))
 		}
-		val intent = if (uris.size == 1) {
+		val sendIntent = if (uris.size == 1) {
 			Intent(Intent.ACTION_SEND).apply {
 				type = shareMimeType
 				putExtra(Intent.EXTRA_STREAM, uris[0])
+				if (!text.isNullOrBlank()) putExtra(Intent.EXTRA_TEXT, text)
 				clipData = uriClipData
-				addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-				if (whatsappPackage != null) setPackage(whatsappPackage)
+				addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 			}
 		} else {
 			Intent(Intent.ACTION_SEND_MULTIPLE).apply {
 				type = shareMimeType
 				putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+				if (!text.isNullOrBlank()) putExtra(Intent.EXTRA_TEXT, text)
 				clipData = uriClipData
 				putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-				addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-				if (whatsappPackage != null) setPackage(whatsappPackage)
+				addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 			}
 		}
-		return try {
-			if (whatsappPackage != null) {
-				for (uri in uris) {
-					grantUriPermission(whatsappPackage, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+		val chooser = Intent.createChooser(sendIntent, "Compartilhar planejamento").apply {
+			addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+		}
+		runOnUiThread {
+			android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+				try {
+					startActivity(chooser)
+				} catch (e: Exception) {
+					android.util.Log.e("Monitore", "Falha ao iniciar compartilhamento: ${e.message}")
 				}
-				startActivity(intent)
-			} else {
-				startActivity(Intent.createChooser(intent, "Compartilhar planejamento"))
-			}
-			mapOf("success" to true, "message" to "Compartilhamento iniciado")
-		} catch (e: Exception) {
-			mapOf("success" to false, "message" to "Falha ao iniciar compartilhamento: ${e.message}")
+			}, 450)
 		}
+		return mapOf("success" to true, "message" to "Compartilhamento iniciado")
 	}
 
 	private fun listSavedPlans(): List<Map<String, Any>> {
@@ -389,14 +380,5 @@ class MainActivity : FlutterActivity() {
 			}
 		}
 		return result
-	}
-
-	private fun isPackageInstalled(packageName: String): Boolean {
-		return try {
-			packageManager.getPackageInfo(packageName, 0)
-			true
-		} catch (_: Exception) {
-			false
-		}
 	}
 }

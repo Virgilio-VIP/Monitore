@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Maria Maia</string>
+	<string>MONITORE</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>maria_maia</string>
+	<string>monitore</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -26,6 +26,20 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Precisamos da câmera para registrar fotos dos pastos e animais.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Precisamos da localização para registrar coordenadas GPS dos locais de pastejo.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Precisamos do microfone para gravar vídeos nos locais.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Precisamos salvar fotos capturadas durante o planejamento.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Precisamos acessar suas fotos para anexar ao planejamento nutricional.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>whatsapp</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

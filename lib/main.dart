@@ -70,6 +70,14 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _requestPermissions() async {
+    if (Platform.isIOS) {
+      await [
+        Permission.camera,
+        Permission.photos,
+        Permission.locationWhenInUse,
+      ].request();
+      return;
+    }
     await [
       Permission.camera,
       Permission.photos,
@@ -157,10 +165,16 @@ class _WebViewScreenState extends State<WebViewScreen> {
     'br.com.monitore.app/gallery',
   );
 
+  bool get _useNativeGallery => Platform.isAndroid || Platform.isIOS;
+
   final Map<String, StringBuffer> _jsonChunkBuffers = {};
   final Map<String, String> _jsonChunkFileNames = {};
   // filename.toLowerCase() → path in media_archive temp dir
   final Map<String, String> _mediaCachePaths = {};
+  bool _shareInProgress = false;
+  DateTime? _lastShareAt;
+  bool _isFinalizingPlan = false;
+  int _finalizingOps = 0;
 
   InAppWebViewController? _webViewController;
   late InAppLocalhostServer _localhostServer;
@@ -196,6 +210,18 @@ class _WebViewScreenState extends State<WebViewScreen> {
     super.dispose();
   }
 
+  void _setFinalizingPlan(bool value) {
+    if (!mounted) return;
+    if (value) {
+      _finalizingOps++;
+    } else if (_finalizingOps > 0) {
+      _finalizingOps--;
+    }
+    final show = _finalizingOps > 0;
+    if (_isFinalizingPlan == show) return;
+    setState(() => _isFinalizingPlan = show);
+  }
+
   // ── JavaScript handlers ──────────────────────────────────────────────
 
   void _registerJavaScriptHandlers(InAppWebViewController controller) {
@@ -204,6 +230,14 @@ class _WebViewScreenState extends State<WebViewScreen> {
       callback: (args) async {
         if (args.isEmpty) return {'success': false, 'message': 'Nenhum dado recebido'};
         return await _saveImageFromBase64(args[0]);
+      },
+    );
+
+    controller.addJavaScriptHandler(
+      handlerName: 'cacheMediaFile',
+      callback: (args) async {
+        if (args.isEmpty || args[0] is! Map) return {'success': false, 'message': 'Dados inválidos'};
+        return await _cacheMediaFromBase64(args[0]);
       },
     );
 
@@ -219,6 +253,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
       handlerName: 'saveJsonToDocuments',
       callback: (args) async {
         if (args.isEmpty) return {'success': false, 'message': 'Nenhum dado recebido'};
+        _setFinalizingPlan(true);
         return await _saveJsonFromWeb(args[0]);
       },
     );
@@ -233,6 +268,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
         if (sessionId.isEmpty) return {'success': false, 'message': 'sessionId ausente'};
         _jsonChunkBuffers[sessionId] = StringBuffer();
         _jsonChunkFileNames[sessionId] = fileName;
+        _setFinalizingPlan(true);
         return {'success': true};
       },
     );
@@ -280,13 +316,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
 
           final bytes = await photo.readAsBytes();
           final fileName = 'foto_${DateTime.now().millisecondsSinceEpoch}.jpg';
-
-          final cacheDir = await getTemporaryDirectory();
-          final archiveDir = Directory('${cacheDir.path}/media_archive');
-          if (!await archiveDir.exists()) await archiveDir.create(recursive: true);
-          final archiveFile = File('${archiveDir.path}/$fileName');
-          await archiveFile.writeAsBytes(bytes);
-          _mediaCachePaths[fileName.toLowerCase()] = archiveFile.path;
+          final archiveFile = await _writeMediaToArchive(fileName, bytes);
 
           if (Platform.isAndroid) {
             try {
@@ -296,6 +326,15 @@ class _WebViewScreenState extends State<WebViewScreen> {
               );
             } catch (e) {
               debugPrint('[capturePhotoNative] gallery save failed: $e');
+            }
+          } else if (Platform.isIOS) {
+            try {
+              await _galleryChannel.invokeMethod(
+                'saveImageFromFile',
+                {'filePath': archiveFile.path, 'fileName': fileName},
+              );
+            } catch (e) {
+              debugPrint('[capturePhotoNative] iOS gallery save failed: $e');
             }
           }
 
@@ -316,7 +355,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
       handlerName: 'listSavedPlans',
       callback: (args) async {
         try {
-          if (!Platform.isAndroid) return <dynamic>[];
+          if (!_useNativeGallery) return <dynamic>[];
           final result = await _galleryChannel.invokeMethod<List<dynamic>>(
             'listSavedPlans', {},
           );
@@ -335,7 +374,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
         final fileName = (args[0] as Map)['fileName']?.toString() ?? '';
         if (fileName.isEmpty) return {'success': false, 'message': 'Nome do arquivo vazio'};
         try {
-          if (!Platform.isAndroid) return {'success': false, 'message': 'Apenas Android'};
+          if (!_useNativeGallery) return {'success': false, 'message': 'Plataforma não suportada'};
           final readResult = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
             'readSavedPlanFile', {'fileName': fileName},
           );
@@ -349,6 +388,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
           await _sharePlanFilesOnWhatsApp(
             fileName: fileName,
             sanitizedJsonContent: sanitizedJson,
+            originalJsonContent: jsonContent,
             mediaFiles: mediaFiles,
           );
           return {'success': true};
@@ -360,6 +400,81 @@ class _WebViewScreenState extends State<WebViewScreen> {
     );
   }
 
+  // ── Media archive (persistent) ───────────────────────────────────────
+
+  Future<Directory> _ensureMediaArchiveDir() async {
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final archiveDir = Directory('${appDocDir.path}/media_archive');
+    if (!await archiveDir.exists()) await archiveDir.create(recursive: true);
+    return archiveDir;
+  }
+
+  Future<File> _writeMediaToArchive(String fileName, List<int> bytes) async {
+    final safeName = _sanitizeFileName(fileName);
+    final archiveDir = await _ensureMediaArchiveDir();
+    final archiveFile = File('${archiveDir.path}/$safeName');
+    await archiveFile.writeAsBytes(bytes);
+    _mediaCachePaths[safeName.toLowerCase()] = archiveFile.path;
+    debugPrint('[Archive] saved $safeName (${bytes.length} bytes)');
+    return archiveFile;
+  }
+
+  Future<Map<String, dynamic>> _cacheMediaFromBase64(dynamic imageData) async {
+    try {
+      if (imageData is! Map) return {'success': false, 'message': 'Dados inválidos'};
+      final base64String = imageData['base64'] as String?;
+      final fileName = imageData['name'] as String? ?? 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      if (base64String == null || base64String.isEmpty) {
+        return {'success': false, 'message': 'String base64 vazia'};
+      }
+      final cleanB64 = base64String.contains(',') ? base64String.split(',').last : base64String;
+      final file = await _writeMediaToArchive(fileName, base64Decode(cleanB64));
+      return {'success': true, 'path': file.path};
+    } catch (e) {
+      debugPrint('[Archive] cacheMediaFile error: $e');
+      return {'success': false, 'message': e.toString()};
+    }
+  }
+
+  Future<int> _persistMediaFromJson(String jsonContent) async {
+    var saved = 0;
+    try {
+      final decoded = jsonDecode(jsonContent);
+      Future<void> walk(dynamic node) async {
+        if (node is List) {
+          for (final item in node) {
+            await walk(item);
+          }
+          return;
+        }
+        if (node is! Map) return;
+        final tag = (node['TAG'] ?? '').toString();
+        if (tag == 'DADOS_MIDIA' && node['RESPOSTA'] is List) {
+          for (final item in node['RESPOSTA'] as List) {
+            if (item is! Map) continue;
+            final name = (item['nome'] ?? '').toString();
+            final content = (item['conteudo'] ?? '').toString();
+            if (name.isEmpty || content.isEmpty) continue;
+            try {
+              final cleanB64 = content.contains(',') ? content.split(',').last : content;
+              await _writeMediaToArchive(name, base64Decode(cleanB64));
+              saved++;
+            } catch (e) {
+              debugPrint('[Archive] persist from JSON failed for $name: $e');
+            }
+          }
+        }
+        for (final value in node.values) {
+          await walk(value);
+        }
+      }
+      await walk(decoded);
+    } catch (e) {
+      debugPrint('[Archive] persistMediaFromJson error: $e');
+    }
+    return saved;
+  }
+
   // ── Image save ───────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> _saveImageFromBase64(dynamic imageData) async {
@@ -369,20 +484,10 @@ class _WebViewScreenState extends State<WebViewScreen> {
       final fileName = imageData['name'] as String? ?? 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
       if (base64String == null || base64String.isEmpty) return {'success': false, 'message': 'String base64 vazia'};
 
-      final imageBytes = base64Decode(base64String);
+      final cleanB64 = base64String.contains(',') ? base64String.split(',').last : base64String;
+      final archiveFile = await _writeMediaToArchive(fileName, base64Decode(cleanB64));
 
-      // Save to temp archive first — also avoids passing large bytes through
-      // the Binder IPC (~1 MB limit) which causes TransactionTooLargeException.
-      final cacheDir = await getTemporaryDirectory();
-      final archiveDir = Directory('${cacheDir.path}/media_archive');
-      if (!await archiveDir.exists()) await archiveDir.create(recursive: true);
-      final archiveFile = File('${archiveDir.path}/$fileName');
-      await archiveFile.writeAsBytes(imageBytes);
-      _mediaCachePaths[fileName.toLowerCase()] = archiveFile.path;
-
-      if (Platform.isAndroid) {
-        // Pass file path, not bytes — avoids Binder TransactionTooLargeException
-        // for large images (camera photos can be 8-15 MB raw).
+      if (_useNativeGallery) {
         final result = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
           'saveImageFromFile',
           {'filePath': archiveFile.path, 'fileName': fileName},
@@ -396,7 +501,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
       final picturesDir = Directory('${appDocDir.path}/Pictures');
       if (!await picturesDir.exists()) await picturesDir.create(recursive: true);
       final file = File('${picturesDir.path}/$fileName');
-      await file.writeAsBytes(imageBytes);
+      await archiveFile.copy(file.path);
       return {'success': true, 'message': 'Imagem salva', 'path': file.path};
     } catch (e) {
       debugPrint('Erro ao salvar imagem: $e');
@@ -412,14 +517,25 @@ class _WebViewScreenState extends State<WebViewScreen> {
       final jsonContent = jsonData['jsonContent'] as String?;
       var fileName = jsonData['fileName'] as String? ?? 'planejamento-${DateTime.now().millisecondsSinceEpoch}.json';
       if (jsonContent == null || jsonContent.isEmpty) return {'success': false, 'message': 'Conteúdo JSON vazio'};
+      if (jsonContent.length < 80) {
+        return {'success': false, 'message': 'JSON incompleto (${jsonContent.length} bytes)'};
+      }
+      try {
+        jsonDecode(jsonContent);
+      } catch (e) {
+        return {'success': false, 'message': 'JSON inválido: $e'};
+      }
 
       if (!fileName.toLowerCase().endsWith('.json')) fileName = '$fileName.json';
+
+      final persisted = await _persistMediaFromJson(jsonContent);
+      debugPrint('[Save] $persisted midias persistidas do JSON');
 
       final processed = _sanitizeJsonAndExtractMedia(jsonContent);
       final sanitizedJson = (processed['jsonContent'] ?? jsonContent).toString();
       final mediaFiles = (processed['mediaFiles'] as List<Map<String, String>>?) ?? [];
 
-      if (Platform.isAndroid) {
+      if (_useNativeGallery) {
         final result = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
           'saveJsonToDocuments',
           {'jsonContent': sanitizedJson, 'fileName': fileName},
@@ -428,6 +544,14 @@ class _WebViewScreenState extends State<WebViewScreen> {
         if (!success) {
           return {'success': false, 'message': (result?['message'] ?? 'Falha ao salvar JSON').toString()};
         }
+        // Small delay so the native save finishes before opening the share sheet.
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        await _sharePlanFilesOnWhatsApp(
+          fileName: fileName,
+          sanitizedJsonContent: sanitizedJson,
+          originalJsonContent: jsonContent,
+          mediaFiles: mediaFiles,
+        );
         return {'success': true, 'message': 'JSON salvo', 'path': (result?['path'] ?? '').toString()};
       }
 
@@ -440,6 +564,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
     } catch (e) {
       debugPrint('Erro ao salvar JSON: $e');
       return {'success': false, 'message': 'Erro ao salvar JSON: $e'};
+    } finally {
+      _setFinalizingPlan(false);
     }
   }
 
@@ -466,7 +592,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
                     : _guessMime(name);
                 final content = (item['conteudo'] ?? '').toString();
                 final localPath = (item['localPath'] ?? item['path'] ?? item['filePath'] ?? '').toString();
-                if (name.isNotEmpty && (content.isNotEmpty || localPath.isNotEmpty)) {
+                if (name.isNotEmpty) {
                   mediaFiles.add({'fileName': name, 'mimeType': mime, 'base64': content, 'localPath': localPath});
                 }
                 sanitizedResposta.add({'nome': name, 'tipo': mime});
@@ -518,33 +644,85 @@ class _WebViewScreenState extends State<WebViewScreen> {
     return null;
   }
 
+  Future<List<File>> _collectArchiveMediaFiles() async {
+    final archiveDir = await _ensureMediaArchiveDir();
+    final files = <File>[];
+    await for (final entity in archiveDir.list(followLinks: false)) {
+      if (entity is! File) continue;
+      try {
+        if (await entity.length() > 0) files.add(entity);
+      } catch (_) {}
+    }
+    debugPrint('[Share] archive scan: ${files.length} arquivos');
+    return files;
+  }
+
   Future<void> _sharePlanFilesOnWhatsApp({
     required String fileName,
     required String sanitizedJsonContent,
     required List<Map<String, String>> mediaFiles,
+    String? originalJsonContent,
   }) async {
-    if (!Platform.isAndroid) return;
+    if (!_useNativeGallery) return;
+    if (_shareInProgress) {
+      debugPrint('[Share] Ignorado — compartilhamento já em andamento');
+      return;
+    }
+    if (_lastShareAt != null &&
+        DateTime.now().difference(_lastShareAt!) < const Duration(seconds: 8)) {
+      debugPrint('[Share] Ignorado — compartilhamento recente');
+      return;
+    }
+    _shareInProgress = true;
     try {
       final cacheDir = await getTemporaryDirectory();
       final shareDir = Directory('${cacheDir.path}/share_temp');
       if (await shareDir.exists()) await shareDir.delete(recursive: true);
       await shareDir.create(recursive: true);
 
-      final filePaths = <String>[];
+      if (originalJsonContent != null && originalJsonContent.isNotEmpty) {
+        final extra = await _persistMediaFromJson(originalJsonContent);
+        debugPrint('[Share] $extra midias extraídas do JSON original');
+      }
+
+      for (final media in mediaFiles) {
+        final b64 = media['base64'] ?? '';
+        final name = media['fileName'] ?? '';
+        if (b64.isNotEmpty && name.isNotEmpty) {
+          try {
+            final cleanB64 = b64.contains(',') ? b64.split(',').last : b64;
+            await _writeMediaToArchive(name, base64Decode(cleanB64));
+          } catch (e) {
+            debugPrint('[Share] persist mediaFiles b64 failed for $name: $e');
+          }
+        }
+      }
 
       // Write JSON
       final jsonFile = File('${shareDir.path}/$fileName');
       await jsonFile.writeAsString(sanitizedJsonContent);
-      filePaths.add(jsonFile.path);
 
       // Build gallery index as fallback
-      final galleryDir = Directory('/storage/emulated/0/Pictures/Monitore');
       final galleryByName = <String, File>{};
-      if (await galleryDir.exists()) {
-        await for (final entity in galleryDir.list(followLinks: false)) {
-          if (entity is File) {
-            final name = entity.uri.pathSegments.last;
-            galleryByName[name.toLowerCase()] = entity;
+      if (Platform.isAndroid) {
+        final galleryDir = Directory('/storage/emulated/0/Pictures/Monitore');
+        if (await galleryDir.exists()) {
+          await for (final entity in galleryDir.list(followLinks: false)) {
+            if (entity is File) {
+              final name = entity.uri.pathSegments.last;
+              galleryByName[name.toLowerCase()] = entity;
+            }
+          }
+        }
+      } else if (Platform.isIOS) {
+        final appDocDir = await getApplicationDocumentsDirectory();
+        final galleryDir = Directory('${appDocDir.path}/Pictures');
+        if (await galleryDir.exists()) {
+          await for (final entity in galleryDir.list(followLinks: false)) {
+            if (entity is File) {
+              final name = entity.uri.pathSegments.last;
+              galleryByName[name.toLowerCase()] = entity;
+            }
           }
         }
       }
@@ -553,9 +731,25 @@ class _WebViewScreenState extends State<WebViewScreen> {
       final preparedFiles = <File>[];
       final seenPaths = <String>{};
 
+      // Always include every file from media_archive (most reliable source).
+      for (final archived in await _collectArchiveMediaFiles()) {
+        if (seenPaths.contains(archived.path)) continue;
+        try {
+          final archiveName = _sanitizeFileName(archived.uri.pathSegments.last);
+          final copy = File('${shareDir.path}/$archiveName');
+          await archived.copy(copy.path);
+          if (await copy.length() > 0) {
+            preparedFiles.add(copy);
+            seenPaths.add(archived.path);
+            debugPrint('[Share] archive: $archiveName (${await copy.length()} bytes)');
+          }
+        } catch (e) {
+          debugPrint('[Share] archive copy failed: $e');
+        }
+      }
+
       // When the JS bridge omits `conteudo` (at.data.split(",")[1] → undefined),
-      // mediaFiles arrives empty. Fall back to everything saved in media_archive
-      // during this session (photo capture/selection always archives there).
+      // mediaFiles may only have names. Fall back to media_archive for this session.
       var effectiveMediaFiles = mediaFiles;
       if (effectiveMediaFiles.isEmpty && _mediaCachePaths.isNotEmpty) {
         debugPrint('[Share] mediaFiles empty — using ${_mediaCachePaths.length} archived images');
@@ -568,6 +762,26 @@ class _WebViewScreenState extends State<WebViewScreen> {
             'localPath': e.value,
           };
         }).toList();
+      }
+
+      // Merge archive entries for any JSON media names not yet resolved.
+      if (effectiveMediaFiles.isNotEmpty && _mediaCachePaths.isNotEmpty) {
+        final merged = List<Map<String, String>>.from(effectiveMediaFiles);
+        final knownNames = merged.map((m) => (m['fileName'] ?? '').toLowerCase()).toSet();
+        for (final entry in _mediaCachePaths.entries) {
+          final archiveName = entry.value.split('/').last;
+          final lower = archiveName.toLowerCase();
+          if (!knownNames.contains(lower)) {
+            merged.add({
+              'fileName': archiveName,
+              'mimeType': _guessMime(archiveName),
+              'base64': '',
+              'localPath': entry.value,
+            });
+            knownNames.add(lower);
+          }
+        }
+        effectiveMediaFiles = merged;
       }
 
       for (var i = 0; i < effectiveMediaFiles.length; i++) {
@@ -648,9 +862,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
           }
         }
 
-        // 5. MediaStore query via Kotlin — most reliable on Android 10+ where direct
-        //    path access may be blocked by scoped storage (works across sessions).
-        if (!prepared && Platform.isAndroid) {
+        // 5. Native gallery lookup (MediaStore on Android, Documents/Pictures on iOS)
+        if (!prepared && _useNativeGallery) {
           try {
             final copyResult = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
               'copyGalleryMediaToTemp',
@@ -681,23 +894,54 @@ class _WebViewScreenState extends State<WebViewScreen> {
         }
       }
 
-      // Create ZIP if there are media files
-      if (preparedFiles.isNotEmpty) {
-        final zipName = '${fileName.replaceAll(RegExp(r'\.json$'), '')}_midias.zip';
-        final zipPath = '${shareDir.path}/$zipName';
-        final encoder = ZipFileEncoder();
-        encoder.create(zipPath);
-        for (final f in preparedFiles) { encoder.addFile(f); }
-        encoder.close();
-        filePaths.add(zipPath);
+      // Create ZIP with JSON + media (single output file for WhatsApp).
+      final uniquePrepared = <File>[];
+      final addedNames = <String>{};
+      for (final f in preparedFiles) {
+        final len = await f.length();
+        if (len <= 0) continue;
+        final name = f.uri.pathSegments.last.toLowerCase();
+        if (addedNames.contains(name)) continue;
+        addedNames.add(name);
+        uniquePrepared.add(f);
+      }
+
+      final zipName = '${fileName.replaceAll(RegExp(r'\.json$'), '')}_completo.zip';
+      final zipPath = '${shareDir.path}/$zipName';
+      final encoder = ZipFileEncoder();
+      encoder.create(zipPath);
+      await encoder.addFile(jsonFile, fileName);
+      for (final f in uniquePrepared) {
+        final entryName = 'midias/${f.uri.pathSegments.last}';
+        await encoder.addFile(f, entryName);
+        debugPrint('[Share] zip + $entryName (${await f.length()} bytes)');
+      }
+      await encoder.close();
+
+      final zipFile = File(zipPath);
+      final zipSize = await zipFile.length();
+      debugPrint('[Share] ZIP $zipName = $zipSize bytes, ${uniquePrepared.length} midias');
+
+      final sharePaths = <String>[];
+      if (zipSize > 80) {
+        sharePaths.add(zipPath);
+        if (uniquePrepared.isEmpty) {
+          debugPrint('[Share] AVISO: ZIP sem midias — apenas JSON incluído');
+        }
+      } else {
+        debugPrint('[Share] ZIP too small — sharing JSON only');
+        sharePaths.add(jsonFile.path);
       }
 
       await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
         'shareFilesViaFileProvider',
-        {'filePaths': filePaths, 'text': 'Planejamento: $fileName'},
+        {'filePaths': sharePaths, 'text': 'Planejamento: $fileName'},
       );
+      _lastShareAt = DateTime.now();
     } catch (e) {
       debugPrint('Erro ao compartilhar no WhatsApp: $e');
+    } finally {
+      _shareInProgress = false;
     }
   }
 
@@ -752,7 +996,9 @@ class _WebViewScreenState extends State<WebViewScreen> {
       child: Scaffold(
         backgroundColor: const Color(0xFFF8FAFC),
         body: SafeArea(
-          child: InAppWebView(
+          child: Stack(
+            children: [
+              InAppWebView(
             initialUrlRequest: URLRequest(
               url: WebUri('http://127.0.0.1:8899/index.html'),
             ),
@@ -775,6 +1021,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
               useWideViewPort: true,
               loadWithOverviewMode: true,
               textZoom: 100,
+              isInspectable: Platform.isIOS,
+              allowsBackForwardNavigationGestures: Platform.isIOS,
             ),
             onWebViewCreated: (controller) {
               _webViewController = controller;
@@ -813,9 +1061,10 @@ class _WebViewScreenState extends State<WebViewScreen> {
                 return NavigationActionPolicy.ALLOW;
               }
 
-              // Block wa.me — Flutter bridge handles WhatsApp file sharing
+              // Block wa.me on Android — Flutter bridge handles file sharing.
+              // On iOS allow url_launcher fallback after finalize.
               final host = uri?.host ?? '';
-              if (host.contains('wa.me') || host.contains('api.whatsapp.com')) {
+              if (Platform.isAndroid && (host.contains('wa.me') || host.contains('api.whatsapp.com'))) {
                 return NavigationActionPolicy.CANCEL;
               }
 
@@ -826,6 +1075,58 @@ class _WebViewScreenState extends State<WebViewScreen> {
 
               return NavigationActionPolicy.ALLOW;
             },
+          ),
+              if (_isFinalizingPlan)
+                Container(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.12),
+                            blurRadius: 24,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 40,
+                            height: 40,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
+                            ),
+                          ),
+                          SizedBox(height: 16),
+                          Text(
+                            'Finalizando planejamento...',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF1E293B),
+                            ),
+                          ),
+                          SizedBox(height: 4),
+                          Text(
+                            'Salvando arquivos e preparando envio',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),
@@ -847,8 +1148,18 @@ const String _photoBridgeJs = r'''
       /\.(jpg|jpeg|png|webp|gif|bmp|heic|heif)$/i.test(name);
   }
 
+  function _cacheMedia(b64, fileName) {
+    if (!b64 || !fileName || !window.flutter_inappwebview) return;
+    window._mmMediaStore = window._mmMediaStore || {};
+    window._mmMediaStore[fileName] = b64;
+    window.flutter_inappwebview
+      .callHandler('cacheMediaFile', {base64: b64, name: fileName})
+      .catch(function(e) { console.error('[PhotoBridge] cache error:', e); });
+  }
+
   function _saveToGallery(b64, fileName) {
     if (!b64 || !window.flutter_inappwebview) return;
+    _cacheMedia(b64, fileName);
     window.flutter_inappwebview
       .callHandler('saveImageToGallery', {base64: b64, name: fileName})
       .catch(function(e) { console.error('[PhotoBridge] save error:', e); });
@@ -897,6 +1208,8 @@ const String _photoBridgeJs = r'''
         // Mark as saved so the readAsDataURL override above won't double-save
         window._mmSaved = window._mmSaved || {};
         window._mmSaved[result.name] = true;
+        window._mmMediaStore = window._mmMediaStore || {};
+        window._mmMediaStore[result.name] = result.base64;
         // Build a synthetic File and inject it into the input via DataTransfer
         var byteStr = atob(result.base64);
         var ab = new ArrayBuffer(byteStr.length);
@@ -919,7 +1232,28 @@ const String _photoBridgeJs = r'''
       });
   }, true);
 
-  // 3. Prevent unhandled promise rejections from crashing the React app
+  // 3. Cache every gallery/video pick immediately (before React processes).
+  document.addEventListener('change', function(e) {
+    var input = e.target;
+    if (!input || input.tagName !== 'INPUT' || input.type !== 'file') return;
+    if (!input.files || !input.files.length || !window.flutter_inappwebview) return;
+    for (var i = 0; i < input.files.length; i++) {
+      (function(file) {
+        if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) return;
+        var reader = new FileReader();
+        reader.onload = function(ev) {
+          try {
+            var raw = ev.target && ev.target.result ? String(ev.target.result) : '';
+            var b64 = raw.indexOf(',') >= 0 ? raw.split(',')[1] : raw;
+            _cacheMedia(b64, file.name || ('midia_' + Date.now() + '.jpg'));
+          } catch(err) { console.error('[PhotoBridge] file input cache error:', err); }
+        };
+        reader.readAsDataURL(file);
+      })(input.files[i]);
+    }
+  }, true);
+
+  // 4. Prevent unhandled promise rejections from crashing the React app
   window.addEventListener('unhandledrejection', function(event) {
     console.warn('[PhotoBridge] Unhandled rejection caught:', event.reason);
     event.preventDefault();
@@ -935,6 +1269,28 @@ const String _jsonBridgeJs = r'''
   var CHUNK_SIZE = 180000;
   var _jsonSaveLock = false;
   var _lastJsonSig = '';
+
+  function enrichPlanningJson(jsonText) {
+    try {
+      var obj = JSON.parse(jsonText);
+      if (!obj || !Array.isArray(obj.LOCAIS)) return jsonText;
+      var store = window._mmMediaStore || {};
+      obj.LOCAIS.forEach(function(loc) {
+        if (!Array.isArray(loc)) return;
+        loc.forEach(function(item) {
+          if (!item || item.TAG !== 'DADOS_MIDIA' || !Array.isArray(item.RESPOSTA)) return;
+          item.RESPOSTA.forEach(function(m) {
+            if (!m || !m.nome) return;
+            if (!m.conteudo && store[m.nome]) m.conteudo = store[m.nome];
+          });
+        });
+      });
+      return JSON.stringify(obj);
+    } catch (e) {
+      console.warn('[JsonBridge] enrichPlanningJson failed:', e);
+      return jsonText;
+    }
+  }
 
   function sendJsonChunked(jsonText, fileName) {
     var sessionId = 'json_' + Date.now() + '_' + Math.random().toString(36).slice(2);
@@ -983,6 +1339,24 @@ const String _jsonBridgeJs = r'''
     var _origStringify = JSON.stringify;
     var _lastSig = '';
     JSON.stringify = function(value, replacer, space) {
+      try {
+        if (value && typeof value === 'object' &&
+            Array.isArray(value.PLANEJAMENTO) &&
+            Array.isArray(value.LOTES_SELECIONADOS) &&
+            Array.isArray(value.LOCAIS)) {
+          var store = window._mmMediaStore || {};
+          value.LOCAIS.forEach(function(loc) {
+            if (!Array.isArray(loc)) return;
+            loc.forEach(function(item) {
+              if (!item || item.TAG !== 'DADOS_MIDIA' || !Array.isArray(item.RESPOSTA)) return;
+              item.RESPOSTA.forEach(function(m) {
+                if (!m || !m.nome) return;
+                if (!m.conteudo && store[m.nome]) m.conteudo = store[m.nome];
+              });
+            });
+          });
+        }
+      } catch(e) {}
       var result = _origStringify.apply(JSON, arguments);
       try {
         if (value && typeof value === 'object' &&
@@ -1023,7 +1397,8 @@ const String _jsonBridgeJs = r'''
               }
             } catch(_) {}
             var fName = planId ? ('plano-nutricional-' + planId + '.json') : ('planejamento-' + Date.now() + '.json');
-            sendJsonToFlutter(result, fName).catch(function(e) {
+            var enriched = enrichPlanningJson(result);
+            sendJsonToFlutter(enriched, fName).catch(function(e) {
               console.error('[JsonBridge] stringify hook failed:', e);
             });
           }
@@ -1046,7 +1421,7 @@ const String _jsonBridgeJs = r'''
             if ((name.toLowerCase().endsWith('.json') || (file.type || '').indexOf('application/json') >= 0) &&
                 typeof file.text === 'function') {
               return file.text().then(function(text) {
-                return sendJsonToFlutter(text, name);
+                return sendJsonToFlutter(enrichPlanningJson(text), name);
               }).catch(function(e) {
                 console.error('[JsonBridge] share intercept failed:', e);
                 return _origShare(shareData);
@@ -1109,7 +1484,7 @@ const String _jsonBridgeJs = r'''
       if (!(blob.type || '').includes('application/json') && !downloadName.toLowerCase().endsWith('.json')) return;
       event.preventDefault();
       blob.text().then(function(text) {
-        return sendJsonToFlutter(text, downloadName || ('planejamento-' + Date.now() + '.json'));
+        return sendJsonToFlutter(enrichPlanningJson(text), downloadName || ('planejamento-' + Date.now() + '.json'));
       }).then(function(res) {
         if (!res || res.success !== true) throw new Error(res && res.message ? res.message : 'Falha');
         console.log('[JsonBridge] JSON salvo:', res.path || res.message);
