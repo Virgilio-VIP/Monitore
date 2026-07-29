@@ -183,9 +183,9 @@ class _WebViewScreenState extends State<WebViewScreen> {
     } catch (e) {
       debugPrint('✗ Error starting localhost server: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Server Error: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Server Error: $e')));
       }
     }
   }
@@ -202,7 +202,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
     controller.addJavaScriptHandler(
       handlerName: 'saveImageToGallery',
       callback: (args) async {
-        if (args.isEmpty) return {'success': false, 'message': 'Nenhum dado recebido'};
+        if (args.isEmpty)
+          return {'success': false, 'message': 'Nenhum dado recebido'};
         return await _saveImageFromBase64(args[0]);
       },
     );
@@ -218,7 +219,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
     controller.addJavaScriptHandler(
       handlerName: 'saveJsonToDocuments',
       callback: (args) async {
-        if (args.isEmpty) return {'success': false, 'message': 'Nenhum dado recebido'};
+        if (args.isEmpty)
+          return {'success': false, 'message': 'Nenhum dado recebido'};
         return await _saveJsonFromWeb(args[0]);
       },
     );
@@ -226,11 +228,13 @@ class _WebViewScreenState extends State<WebViewScreen> {
     controller.addJavaScriptHandler(
       handlerName: 'saveJsonStart',
       callback: (args) async {
-        if (args.isEmpty || args[0] is! Map) return {'success': false, 'message': 'Dados inválidos'};
+        if (args.isEmpty || args[0] is! Map)
+          return {'success': false, 'message': 'Dados inválidos'};
         final data = args[0] as Map;
         final sessionId = (data['sessionId'] ?? '').toString();
         final fileName = (data['fileName'] ?? '').toString();
-        if (sessionId.isEmpty) return {'success': false, 'message': 'sessionId ausente'};
+        if (sessionId.isEmpty)
+          return {'success': false, 'message': 'sessionId ausente'};
         _jsonChunkBuffers[sessionId] = StringBuffer();
         _jsonChunkFileNames[sessionId] = fileName;
         return {'success': true};
@@ -240,12 +244,14 @@ class _WebViewScreenState extends State<WebViewScreen> {
     controller.addJavaScriptHandler(
       handlerName: 'saveJsonChunk',
       callback: (args) async {
-        if (args.isEmpty || args[0] is! Map) return {'success': false, 'message': 'Dados inválidos'};
+        if (args.isEmpty || args[0] is! Map)
+          return {'success': false, 'message': 'Dados inválidos'};
         final data = args[0] as Map;
         final sessionId = (data['sessionId'] ?? '').toString();
         final chunk = (data['chunk'] ?? '').toString();
         final buffer = _jsonChunkBuffers[sessionId];
-        if (sessionId.isEmpty || buffer == null) return {'success': false, 'message': 'Sessão inexistente'};
+        if (sessionId.isEmpty || buffer == null)
+          return {'success': false, 'message': 'Sessão inexistente'};
         buffer.write(chunk);
         return {'success': true};
       },
@@ -254,13 +260,18 @@ class _WebViewScreenState extends State<WebViewScreen> {
     controller.addJavaScriptHandler(
       handlerName: 'saveJsonFinish',
       callback: (args) async {
-        if (args.isEmpty || args[0] is! Map) return {'success': false, 'message': 'Dados inválidos'};
+        if (args.isEmpty || args[0] is! Map)
+          return {'success': false, 'message': 'Dados inválidos'};
         final data = args[0] as Map;
         final sessionId = (data['sessionId'] ?? '').toString();
         final buffer = _jsonChunkBuffers.remove(sessionId);
         final fileName = _jsonChunkFileNames.remove(sessionId);
-        if (sessionId.isEmpty || buffer == null) return {'success': false, 'message': 'Sessão inexistente'};
-        return await _saveJsonFromWeb({'jsonContent': buffer.toString(), 'fileName': fileName});
+        if (sessionId.isEmpty || buffer == null)
+          return {'success': false, 'message': 'Sessão inexistente'};
+        return await _saveJsonFromWeb({
+          'jsonContent': buffer.toString(),
+          'fileName': fileName,
+        });
       },
     );
 
@@ -283,17 +294,18 @@ class _WebViewScreenState extends State<WebViewScreen> {
 
           final cacheDir = await getTemporaryDirectory();
           final archiveDir = Directory('${cacheDir.path}/media_archive');
-          if (!await archiveDir.exists()) await archiveDir.create(recursive: true);
+          if (!await archiveDir.exists())
+            await archiveDir.create(recursive: true);
           final archiveFile = File('${archiveDir.path}/$fileName');
           await archiveFile.writeAsBytes(bytes);
           _mediaCachePaths[fileName.toLowerCase()] = archiveFile.path;
 
           if (Platform.isAndroid) {
             try {
-              await _galleryChannel.invokeMethod(
-                'saveImageFromFile',
-                {'filePath': archiveFile.path, 'fileName': fileName},
-              );
+              await _galleryChannel.invokeMethod('saveImageFromFile', {
+                'filePath': archiveFile.path,
+                'fileName': fileName,
+              });
             } catch (e) {
               debugPrint('[capturePhotoNative] gallery save failed: $e');
             }
@@ -318,7 +330,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
         try {
           if (!Platform.isAndroid) return <dynamic>[];
           final result = await _galleryChannel.invokeMethod<List<dynamic>>(
-            'listSavedPlans', {},
+            'listSavedPlans',
+            {},
           );
           return result ?? <dynamic>[];
         } catch (e) {
@@ -331,21 +344,31 @@ class _WebViewScreenState extends State<WebViewScreen> {
     controller.addJavaScriptHandler(
       handlerName: 'shareSavedPlan',
       callback: (args) async {
-        if (args.isEmpty || args[0] is! Map) return {'success': false, 'message': 'Dados inválidos'};
+        if (args.isEmpty || args[0] is! Map)
+          return {'success': false, 'message': 'Dados inválidos'};
         final fileName = (args[0] as Map)['fileName']?.toString() ?? '';
-        if (fileName.isEmpty) return {'success': false, 'message': 'Nome do arquivo vazio'};
+        if (fileName.isEmpty)
+          return {'success': false, 'message': 'Nome do arquivo vazio'};
         try {
-          if (!Platform.isAndroid) return {'success': false, 'message': 'Apenas Android'};
-          final readResult = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
-            'readSavedPlanFile', {'fileName': fileName},
-          );
+          if (!Platform.isAndroid)
+            return {'success': false, 'message': 'Apenas Android'};
+          final readResult = await _galleryChannel
+              .invokeMethod<Map<dynamic, dynamic>>('readSavedPlanFile', {
+                'fileName': fileName,
+              });
           if (readResult?['success'] != true) {
-            return {'success': false, 'message': (readResult?['message'] ?? 'Falha ao ler arquivo').toString()};
+            return {
+              'success': false,
+              'message': (readResult?['message'] ?? 'Falha ao ler arquivo')
+                  .toString(),
+            };
           }
           final jsonContent = readResult!['content'] as String;
           final processed = _sanitizeJsonAndExtractMedia(jsonContent);
-          final sanitizedJson = (processed['jsonContent'] ?? jsonContent).toString();
-          final mediaFiles = (processed['mediaFiles'] as List<Map<String, String>>?) ?? [];
+          final sanitizedJson = (processed['jsonContent'] ?? jsonContent)
+              .toString();
+          final mediaFiles =
+              (processed['mediaFiles'] as List<Map<String, String>>?) ?? [];
           await _sharePlanFilesOnWhatsApp(
             fileName: fileName,
             sanitizedJsonContent: sanitizedJson,
@@ -364,10 +387,14 @@ class _WebViewScreenState extends State<WebViewScreen> {
 
   Future<Map<String, dynamic>> _saveImageFromBase64(dynamic imageData) async {
     try {
-      if (imageData is! Map) return {'success': false, 'message': 'Dados inválidos'};
+      if (imageData is! Map)
+        return {'success': false, 'message': 'Dados inválidos'};
       final base64String = imageData['base64'] as String?;
-      final fileName = imageData['name'] as String? ?? 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      if (base64String == null || base64String.isEmpty) return {'success': false, 'message': 'String base64 vazia'};
+      final fileName =
+          imageData['name'] as String? ??
+          'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      if (base64String == null || base64String.isEmpty)
+        return {'success': false, 'message': 'String base64 vazia'};
 
       final imageBytes = base64Decode(base64String);
 
@@ -383,18 +410,29 @@ class _WebViewScreenState extends State<WebViewScreen> {
       if (Platform.isAndroid) {
         // Pass file path, not bytes — avoids Binder TransactionTooLargeException
         // for large images (camera photos can be 8-15 MB raw).
-        final result = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
-          'saveImageFromFile',
-          {'filePath': archiveFile.path, 'fileName': fileName},
-        );
+        final result = await _galleryChannel
+            .invokeMethod<Map<dynamic, dynamic>>('saveImageFromFile', {
+              'filePath': archiveFile.path,
+              'fileName': fileName,
+            });
         final success = result?['success'] == true;
-        if (!success) return {'success': false, 'message': (result?['message'] ?? 'Falha ao salvar na galeria').toString()};
-        return {'success': true, 'message': 'Imagem salva na galeria', 'path': (result?['path'] ?? '').toString()};
+        if (!success)
+          return {
+            'success': false,
+            'message': (result?['message'] ?? 'Falha ao salvar na galeria')
+                .toString(),
+          };
+        return {
+          'success': true,
+          'message': 'Imagem salva na galeria',
+          'path': (result?['path'] ?? '').toString(),
+        };
       }
 
       final appDocDir = await getApplicationDocumentsDirectory();
       final picturesDir = Directory('${appDocDir.path}/Pictures');
-      if (!await picturesDir.exists()) await picturesDir.create(recursive: true);
+      if (!await picturesDir.exists())
+        await picturesDir.create(recursive: true);
       final file = File('${picturesDir.path}/$fileName');
       await file.writeAsBytes(imageBytes);
       return {'success': true, 'message': 'Imagem salva', 'path': file.path};
@@ -408,27 +446,43 @@ class _WebViewScreenState extends State<WebViewScreen> {
 
   Future<Map<String, dynamic>> _saveJsonFromWeb(dynamic jsonData) async {
     try {
-      if (jsonData is! Map) return {'success': false, 'message': 'Dados inválidos'};
+      if (jsonData is! Map)
+        return {'success': false, 'message': 'Dados inválidos'};
       final jsonContent = jsonData['jsonContent'] as String?;
-      var fileName = jsonData['fileName'] as String? ?? 'planejamento-${DateTime.now().millisecondsSinceEpoch}.json';
-      if (jsonContent == null || jsonContent.isEmpty) return {'success': false, 'message': 'Conteúdo JSON vazio'};
+      var fileName =
+          jsonData['fileName'] as String? ??
+          'planejamento-${DateTime.now().millisecondsSinceEpoch}.json';
+      if (jsonContent == null || jsonContent.isEmpty)
+        return {'success': false, 'message': 'Conteúdo JSON vazio'};
 
-      if (!fileName.toLowerCase().endsWith('.json')) fileName = '$fileName.json';
+      if (!fileName.toLowerCase().endsWith('.json'))
+        fileName = '$fileName.json';
 
       final processed = _sanitizeJsonAndExtractMedia(jsonContent);
-      final sanitizedJson = (processed['jsonContent'] ?? jsonContent).toString();
-      final mediaFiles = (processed['mediaFiles'] as List<Map<String, String>>?) ?? [];
+      final sanitizedJson = (processed['jsonContent'] ?? jsonContent)
+          .toString();
+      final mediaFiles =
+          (processed['mediaFiles'] as List<Map<String, String>>?) ?? [];
 
       if (Platform.isAndroid) {
-        final result = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
-          'saveJsonToDocuments',
-          {'jsonContent': sanitizedJson, 'fileName': fileName},
-        );
+        final result = await _galleryChannel
+            .invokeMethod<Map<dynamic, dynamic>>('saveJsonToDocuments', {
+              'jsonContent': sanitizedJson,
+              'fileName': fileName,
+            });
         final success = result?['success'] == true;
         if (!success) {
-          return {'success': false, 'message': (result?['message'] ?? 'Falha ao salvar JSON').toString()};
+          return {
+            'success': false,
+            'message': (result?['message'] ?? 'Falha ao salvar JSON')
+                .toString(),
+          };
         }
-        return {'success': true, 'message': 'JSON salvo', 'path': (result?['path'] ?? '').toString()};
+        return {
+          'success': true,
+          'message': 'JSON salvo',
+          'path': (result?['path'] ?? '').toString(),
+        };
       }
 
       final appDocDir = await getApplicationDocumentsDirectory();
@@ -465,9 +519,20 @@ class _WebViewScreenState extends State<WebViewScreen> {
                     ? (item['tipo'] ?? '').toString()
                     : _guessMime(name);
                 final content = (item['conteudo'] ?? '').toString();
-                final localPath = (item['localPath'] ?? item['path'] ?? item['filePath'] ?? '').toString();
-                if (name.isNotEmpty && (content.isNotEmpty || localPath.isNotEmpty)) {
-                  mediaFiles.add({'fileName': name, 'mimeType': mime, 'base64': content, 'localPath': localPath});
+                final localPath =
+                    (item['localPath'] ??
+                            item['path'] ??
+                            item['filePath'] ??
+                            '')
+                        .toString();
+                if (name.isNotEmpty &&
+                    (content.isNotEmpty || localPath.isNotEmpty)) {
+                  mediaFiles.add({
+                    'fileName': name,
+                    'mimeType': mime,
+                    'base64': content,
+                    'localPath': localPath,
+                  });
                 }
                 sanitizedResposta.add({'nome': name, 'tipo': mime});
               }
@@ -483,10 +548,16 @@ class _WebViewScreenState extends State<WebViewScreen> {
         return node;
       }
 
-      return {'jsonContent': jsonEncode(sanitizeNode(decoded)), 'mediaFiles': mediaFiles};
+      return {
+        'jsonContent': jsonEncode(sanitizeNode(decoded)),
+        'mediaFiles': mediaFiles,
+      };
     } catch (e) {
       debugPrint('Falha ao sanitizar JSON: $e');
-      return {'jsonContent': jsonContent, 'mediaFiles': <Map<String, String>>[]};
+      return {
+        'jsonContent': jsonContent,
+        'mediaFiles': <Map<String, String>>[],
+      };
     }
   }
 
@@ -500,11 +571,17 @@ class _WebViewScreenState extends State<WebViewScreen> {
   }
 
   String _sanitizeFileName(String fileName) {
-    final cleaned = fileName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').replaceAll(RegExp(r'\s+'), '_').trim();
+    final cleaned = fileName
+        .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
+        .replaceAll(RegExp(r'\s+'), '_')
+        .trim();
     return cleaned.isEmpty ? 'arquivo.bin' : cleaned;
   }
 
-  File? _findGalleryMedia({required Map<String, File> galleryByName, required String preferredName}) {
+  File? _findGalleryMedia({
+    required Map<String, File> galleryByName,
+    required String preferredName,
+  }) {
     if (preferredName.isEmpty) return null;
     final exact = galleryByName[preferredName.toLowerCase()];
     if (exact != null) return exact;
@@ -513,7 +590,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
         : preferredName;
     final lowerStem = stem.toLowerCase();
     for (final entry in galleryByName.entries) {
-      if (entry.key == lowerStem || entry.key.startsWith('$lowerStem.')) return entry.value;
+      if (entry.key == lowerStem || entry.key.startsWith('$lowerStem.'))
+        return entry.value;
     }
     return null;
   }
@@ -558,7 +636,9 @@ class _WebViewScreenState extends State<WebViewScreen> {
       // during this session (photo capture/selection always archives there).
       var effectiveMediaFiles = mediaFiles;
       if (effectiveMediaFiles.isEmpty && _mediaCachePaths.isNotEmpty) {
-        debugPrint('[Share] mediaFiles empty — using ${_mediaCachePaths.length} archived images');
+        debugPrint(
+          '[Share] mediaFiles empty — using ${_mediaCachePaths.length} archived images',
+        );
         effectiveMediaFiles = _mediaCachePaths.entries.map((e) {
           final archiveName = e.value.split('/').last;
           return {
@@ -572,13 +652,17 @@ class _WebViewScreenState extends State<WebViewScreen> {
 
       for (var i = 0; i < effectiveMediaFiles.length; i++) {
         final media = effectiveMediaFiles[i];
-        final origName = media['fileName']?.isNotEmpty == true ? media['fileName']! : 'midia_${i + 1}.bin';
+        final origName = media['fileName']?.isNotEmpty == true
+            ? media['fileName']!
+            : 'midia_${i + 1}.bin';
         final safeName = _sanitizeFileName(origName);
         final b64 = media['base64'] ?? '';
         final localPath = media['localPath'] ?? '';
         var prepared = false;
 
-        debugPrint('[Share] media[$i]: $safeName  b64=${b64.length}chars  localPath=$localPath');
+        debugPrint(
+          '[Share] media[$i]: $safeName  b64=${b64.length}chars  localPath=$localPath',
+        );
 
         // 1. Explicit local path (set by a future bridge extension)
         if (!prepared && localPath.isNotEmpty) {
@@ -599,12 +683,14 @@ class _WebViewScreenState extends State<WebViewScreen> {
         // 2. Media archive — bytes saved the moment the image was captured/selected.
         //    This is the most reliable source and avoids JSON base64 round-trip issues.
         if (!prepared) {
-          final cached = _mediaCachePaths[origName.toLowerCase()] ??
+          final cached =
+              _mediaCachePaths[origName.toLowerCase()] ??
               _mediaCachePaths[safeName.toLowerCase()];
           if (cached != null) {
             try {
               final cachedFile = File(cached);
-              if (await cachedFile.exists() && !seenPaths.contains(cachedFile.path)) {
+              if (await cachedFile.exists() &&
+                  !seenPaths.contains(cachedFile.path)) {
                 final copy = File('${shareDir.path}/$safeName');
                 await cachedFile.copy(copy.path);
                 preparedFiles.add(copy);
@@ -635,8 +721,13 @@ class _WebViewScreenState extends State<WebViewScreen> {
         // 4. Gallery directory scan (Android < 11)
         if (!prepared) {
           try {
-            final fromGallery = _findGalleryMedia(galleryByName: galleryByName, preferredName: safeName);
-            if (fromGallery != null && await fromGallery.exists() && !seenPaths.contains(fromGallery.path)) {
+            final fromGallery = _findGalleryMedia(
+              galleryByName: galleryByName,
+              preferredName: safeName,
+            );
+            if (fromGallery != null &&
+                await fromGallery.exists() &&
+                !seenPaths.contains(fromGallery.path)) {
               final copy = File('${shareDir.path}/$safeName');
               await fromGallery.copy(copy.path);
               preparedFiles.add(copy);
@@ -652,10 +743,11 @@ class _WebViewScreenState extends State<WebViewScreen> {
         //    path access may be blocked by scoped storage (works across sessions).
         if (!prepared && Platform.isAndroid) {
           try {
-            final copyResult = await _galleryChannel.invokeMethod<Map<dynamic, dynamic>>(
-              'copyGalleryMediaToTemp',
-              {'fileNames': [origName, safeName], 'destDir': shareDir.path},
-            );
+            final copyResult = await _galleryChannel
+                .invokeMethod<Map<dynamic, dynamic>>('copyGalleryMediaToTemp', {
+                  'fileNames': [origName, safeName],
+                  'destDir': shareDir.path,
+                });
             if (copyResult != null) {
               for (final entry in copyResult.entries) {
                 final path = entry.value?.toString() ?? '';
@@ -677,17 +769,22 @@ class _WebViewScreenState extends State<WebViewScreen> {
         }
 
         if (!prepared) {
-          debugPrint('[Share] WARN: could not prepare $safeName from any source');
+          debugPrint(
+            '[Share] WARN: could not prepare $safeName from any source',
+          );
         }
       }
 
       // Create ZIP if there are media files
       if (preparedFiles.isNotEmpty) {
-        final zipName = '${fileName.replaceAll(RegExp(r'\.json$'), '')}_midias.zip';
+        final zipName =
+            '${fileName.replaceAll(RegExp(r'\.json$'), '')}_midias.zip';
         final zipPath = '${shareDir.path}/$zipName';
         final encoder = ZipFileEncoder();
         encoder.create(zipPath);
-        for (final f in preparedFiles) { encoder.addFile(f); }
+        for (final f in preparedFiles) {
+          encoder.addFile(f);
+        }
         encoder.close();
         filePaths.add(zipPath);
       }
@@ -705,14 +802,23 @@ class _WebViewScreenState extends State<WebViewScreen> {
 
   bool _isCustomSchemeUrl(Uri? uri) {
     if (uri == null) return false;
-    return ['whatsapp', 'tel', 'mailto', 'sms', 'intent', 'geo', 'market'].contains(uri.scheme);
+    return [
+      'whatsapp',
+      'tel',
+      'mailto',
+      'sms',
+      'intent',
+      'geo',
+      'market',
+    ].contains(uri.scheme);
   }
 
   Future<void> _launchCustomUrl(String urlString) async {
     try {
       final uri = Uri.parse(urlString);
       if (urlString.contains('whatsapp.com')) {
-        if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (await canLaunchUrl(uri))
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
         return;
       }
       if (await canLaunchUrl(uri)) {
@@ -798,13 +904,17 @@ class _WebViewScreenState extends State<WebViewScreen> {
             },
             onLoadStop: (controller, url) async {
               debugPrint('WebView load completed: $url');
-              await controller.evaluateJavascript(source: _photoBridgeJs + _jsonBridgeJs + _galleryOverlayJs);
+              await controller.evaluateJavascript(
+                source: _photoBridgeJs + _jsonBridgeJs + _galleryOverlayJs,
+              );
             },
             onConsoleMessage: (controller, consoleMessage) {
               debugPrint('WebView Console: ${consoleMessage.message}');
             },
             onReceivedError: (controller, request, error) {
-              debugPrint('WebView Error: ${error.type} - ${error.description}\nURL: ${request.url}');
+              debugPrint(
+                'WebView Error: ${error.type} - ${error.description}\nURL: ${request.url}',
+              );
             },
             shouldOverrideUrlLoading: (controller, navigationAction) async {
               final uri = navigationAction.request.url;
@@ -1123,190 +1233,241 @@ const String _jsonBridgeJs = r'''
 })();
 ''';
 
-// ── Gallery overlay — replaces the /gallery tab content with a list of
-//    all saved plans read from Documents/Monitore, with WhatsApp send buttons.
+// ── Gallery overlay — covers the /gallery tab content (z-index:49, below React
+//    nav bar at z-50). Detected via polling + nav-tab click interception.
+//    Lists ALL plans from Documents/Monitore; recent ones (<24h) highlighted.
 const String _galleryOverlayJs = r'''
 (function() {
-  if (window._mmGalleryOvlInstalled) return;
-  window._mmGalleryOvlInstalled = true;
+  if (window._mmGovInstalled) return;
+  window._mmGovInstalled = true;
 
-  var OVL_ID = '_mmGalleryOvl';
+  var OVL_ID  = '_mmGov';
+  var LIST_ID = '_mmGovList';
+  var _24H    = 24 * 60 * 60 * 1000;
+  var _onGallery = false;
 
+  var WA_PATH = 'M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z';
+  function _wa(sz) {
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="'+sz+'" height="'+sz+'" viewBox="0 0 24 24" fill="currentColor"><path d="'+WA_PATH+'"/></svg>';
+  }
   function _esc(s) {
-    return String(s || '')
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  var WA_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>';
+  // ── Overlay ───────────────────────────────────────────────────────────────────
 
-  function _removeOverlay() {
+  function _show() {
+    if (document.getElementById(OVL_ID)) return;
+    var el = document.createElement('div');
+    el.id = OVL_ID;
+    // z-index:49 sits BELOW the React nav bar (z-50 = Tailwind z-50).
+    // The nav bar stays on top and remains fully clickable for tab navigation.
+    // inset:0 covers the full viewport; padding-top/bottom keeps content
+    // clear of the React header (~56px) and nav bar (~72px).
+    el.style.cssText = [
+      'position:fixed;inset:0;z-index:49;',
+      'background:#f8fafc;display:flex;flex-direction:column;',
+      'font-family:Inter,system-ui,sans-serif;'
+    ].join('');
+    el.innerHTML = [
+      // header — matches the app's green theme; sits at top, above page content
+      '<div style="background:#16a34a;color:white;',
+        'height:56px;min-height:56px;padding:0 14px;flex-shrink:0;',
+        'display:flex;align-items:center;gap:10px;',
+        'box-shadow:0 2px 8px rgba(0,0,0,0.2)">',
+        '<div style="flex:1">',
+          '<div style="font-size:16px;font-weight:700;line-height:1.2">Planejamentos Salvos</div>',
+          '<div style="font-size:11px;opacity:0.85">Documents/Monitore</div>',
+        '</div>',
+        '<button id="_mmGRef" style="',
+          'background:rgba(255,255,255,0.2);border:none;border-radius:8px;',
+          'padding:7px 12px;color:white;font-size:12px;font-weight:600;cursor:pointer;',
+          'display:flex;align-items:center;gap:5px;-webkit-tap-highlight-color:transparent">',
+          '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"',
+            ' fill="none" stroke="currentColor" stroke-width="2.5">',
+            '<polyline points="23 4 23 10 17 10"/>',
+            '<polyline points="1 20 1 14 7 14"/>',
+            '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+          '</svg>',
+          'Atualizar',
+        '</button>',
+        _wa(22),
+      '</div>',
+      // scrollable content — padding-bottom clears the React bottom nav bar (~72px)
+      '<div id="'+LIST_ID+'" style="flex:1;overflow-y:auto;padding:14px 14px 80px">',
+        '<div style="text-align:center;color:#94a3b8;padding:56px 0 20px;font-size:13px">',
+          'Carregando planejamentos...',
+        '</div>',
+      '</div>',
+    ].join('');
+    document.body.appendChild(el);
+
+    document.getElementById('_mmGRef').addEventListener('click', function() { _load(true); });
+
+    // Delegate WhatsApp button taps
+    el.addEventListener('click', function(e) {
+      var btn  = e.target.closest ? e.target.closest('._mmGB') : null;
+      if (!btn || btn.disabled) return;
+      var card = btn.closest('._mmGC');
+      if (!card || !window.flutter_inappwebview) return;
+      var fn = card.getAttribute('data-fn');
+      if (!fn) return;
+      btn.disabled = true;
+      btn.innerHTML = '⏳ Preparando...';
+      window.flutter_inappwebview.callHandler('shareSavedPlan', {fileName: fn})
+        .then(function()    { btn.disabled=false; btn.innerHTML=_wa(15)+' Enviar via WhatsApp'; })
+        .catch(function(er) { btn.disabled=false; btn.innerHTML=_wa(15)+' Enviar via WhatsApp';
+          console.error('[Gal]',er); });
+    });
+
+    _load(false);
+  }
+
+  function _hide() {
     var el = document.getElementById(OVL_ID);
     if (el) el.remove();
   }
 
-  function _createOverlay() {
-    _removeOverlay();
-    var ovl = document.createElement('div');
-    ovl.id = OVL_ID;
-    // z-index 40 sits below the React header/bottom-nav (typically z-50),
-    // padding-top/bottom compensates so content is not hidden under them.
-    ovl.style.cssText = [
-      'position:fixed;inset:0;z-index:40;overflow-y:auto;',
-      'background:#f8fafc;padding:72px 16px 80px;',
-      'font-family:Inter,system-ui,sans-serif;'
-    ].join('');
-    ovl.innerHTML = [
-      '<div style="max-width:480px;margin:0 auto">',
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">',
-          '<div>',
-            '<h2 style="font-size:16px;font-weight:700;color:#1e293b;margin:0 0 2px">Planejamentos Salvos</h2>',
-            '<p style="font-size:12px;color:#64748b;margin:0">Toque em Enviar para compartilhar via WhatsApp</p>',
-          '</div>',
-          '<button id="_mmRefreshBtn" style="',
-            'background:white;border:1px solid #e2e8f0;border-radius:8px;',
-            'padding:7px 12px;font-size:12px;color:#475569;cursor:pointer;',
-            'display:flex;align-items:center;gap:5px;flex-shrink:0',
-          '">',
-            '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">',
-              '<polyline points="23 4 23 10 17 10"/>',
-              '<polyline points="1 20 1 14 7 14"/>',
-              '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
-            '</svg>',
-            'Atualizar',
-          '</button>',
-        '</div>',
-        '<div id="_mmPlanList">',
-          '<div style="text-align:center;color:#94a3b8;padding:40px 0;font-size:13px">Carregando...</div>',
-        '</div>',
-      '</div>'
-    ].join('');
-    document.body.appendChild(ovl);
+  // ── Data ──────────────────────────────────────────────────────────────────────
 
-    document.getElementById('_mmRefreshBtn').addEventListener('click', _loadPlans);
-
-    // Event delegation for share buttons
-    ovl.addEventListener('click', function(e) {
-      var btn = e.target.closest ? e.target.closest('._mm-share-btn') : null;
-      if (!btn || btn.disabled) return;
-      var card = btn.closest ? btn.closest('._mm-plan-card') : null;
-      if (!card || !window.flutter_inappwebview) return;
-      var fileName = card.getAttribute('data-fname');
-      if (!fileName) return;
-      btn.disabled = true;
-      btn.textContent = '⏳ Preparando...';
-      window.flutter_inappwebview.callHandler('shareSavedPlan', {fileName: fileName})
-        .then(function() {
-          btn.disabled = false;
-          btn.innerHTML = WA_ICON + ' Enviar via WhatsApp';
-        })
-        .catch(function(err) {
-          btn.disabled = false;
-          btn.innerHTML = WA_ICON + ' Enviar via WhatsApp';
-          console.error('[Gallery] shareSavedPlan error:', err);
-        });
-    });
-
-    _loadPlans();
-  }
-
-  function _loadPlans() {
-    var list = document.getElementById('_mmPlanList');
+  function _load(spinner) {
+    var list = document.getElementById(LIST_ID);
     if (!list) return;
-    list.innerHTML = '<div style="text-align:center;color:#94a3b8;padding:40px 0;font-size:13px">Carregando...</div>';
+    if (spinner) list.innerHTML = '<div style="text-align:center;color:#94a3b8;padding:56px 0;font-size:13px">Carregando...</div>';
     if (!window.flutter_inappwebview) {
-      list.innerHTML = '<div style="text-align:center;color:#ef4444;padding:40px 0;font-size:13px">Bridge Flutter indisponível</div>';
+      list.innerHTML = '<div style="text-align:center;color:#ef4444;padding:40px 0;font-size:13px">Bridge indisponível — reinicie o app</div>';
       return;
     }
     window.flutter_inappwebview.callHandler('listSavedPlans', {})
-      .then(function(plans) {
-        _renderPlans(Array.isArray(plans) ? plans : []);
-      })
-      .catch(function(err) {
-        console.error('[Gallery] listSavedPlans error:', err);
-        var el = document.getElementById('_mmPlanList');
-        if (el) el.innerHTML = '<div style="text-align:center;color:#ef4444;padding:40px 0;font-size:13px">Erro ao carregar. Tente atualizar.</div>';
+      .then(function(data) { _render(Array.isArray(data) ? data : []); })
+      .catch(function(e)   {
+        console.error('[Gal] listSavedPlans error:', e);
+        var l = document.getElementById(LIST_ID);
+        if (l) l.innerHTML = '<div style="text-align:center;color:#ef4444;padding:40px 16px;font-size:13px">Erro ao carregar planejamentos.<br><small style="color:#94a3b8">'+String(e)+'</small><br><br>Toque em <b>Atualizar</b> para tentar novamente.</div>';
       });
   }
 
-  function _renderPlans(plans) {
-    var list = document.getElementById('_mmPlanList');
+  function _render(plans) {
+    var list = document.getElementById(LIST_ID);
     if (!list) return;
     if (!plans.length) {
       list.innerHTML = [
-        '<div style="text-align:center;padding:48px 24px">',
-          '<div style="font-size:44px;margin-bottom:14px">📋</div>',
-          '<p style="font-weight:600;color:#475569;margin:0 0 8px;font-size:15px">Nenhum planejamento salvo</p>',
-          '<p style="font-size:13px;color:#94a3b8;margin:0;line-height:1.5">',
-            'Finalize um planejamento na aba Plan<br>para que ele apareça aqui.',
+        '<div style="text-align:center;padding:48px 20px">',
+          '<div style="font-size:52px;margin-bottom:14px">📋</div>',
+          '<p style="font-weight:700;color:#374151;margin:0 0 8px;font-size:16px">Nenhum planejamento salvo</p>',
+          '<p style="font-size:13px;color:#9ca3af;margin:0;line-height:1.7">',
+            'Finalize um planejamento na aba <b>Plan</b><br>para que ele apareça aqui.',
           '</p>',
         '</div>'
       ].join('');
       return;
     }
+    var now = Date.now();
     list.innerHTML = plans.map(function(p) {
-      var date = new Date(Number(p.dateMs) || 0);
-      var dateStr = date.toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit', year:'numeric'});
-      var timeStr = date.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
-      var sizeKb  = ((Number(p.size) || 0) / 1024).toFixed(1);
-      var rawName = String(p.fileName || '').replace(/\.json$/i, '').replace(/^plano-nutricional-/, '');
-      var display = rawName.replace(/[-_]/g, ' ');
+      var ms   = Number(p.dateMs)||0;
+      var novo = (now - ms) < _24H;
+      var d    = new Date(ms);
+      var df   = d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
+      var tf   = d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+      var kb   = ((Number(p.size)||0)/1024).toFixed(1);
+      var raw  = String(p.fileName||'').replace(/\.json$/i,'').replace(/^plano-nutricional-/,'');
+      var name = raw.replace(/[-_]/g,' ') || String(p.fileName||'sem nome');
+
+      var cBg  = novo ? '#f0fdf4' : '#ffffff';
+      var cBdr = novo ? '2px solid #16a34a' : '1px solid #e5e7eb';
+      var iClr = novo ? '#15803d' : '#16a34a';
+      var badge= novo ? ' <span style="font-size:9px;font-weight:800;background:#16a34a;color:white;padding:1px 6px;border-radius:10px;vertical-align:middle;letter-spacing:.4px">RECENTE</span>' : '';
+
       return [
-        '<div class="_mm-plan-card" data-fname="', _esc(p.fileName), '" style="',
-          'background:white;border-radius:12px;padding:16px;margin-bottom:12px;',
-          'box-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.04)">',
-          '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px">',
-            '<div style="width:38px;height:38px;background:#eff6ff;border-radius:8px;',
-              'display:flex;align-items:center;justify-content:center;flex-shrink:0">',
-              '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2">',
+        '<div class="_mmGC" data-fn="',_esc(p.fileName),'" style="',
+          'background:'+cBg+';border:'+cBdr+';',
+          'border-radius:14px;padding:14px 14px 12px;margin-bottom:10px;',
+          'box-shadow:0 1px 6px rgba(0,0,0,0.06)">',
+
+          // plan info row
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">',
+            '<div style="width:40px;height:40px;border-radius:10px;',
+              'background:'+( novo ? '#dcfce7' : '#f0fdf4' )+';',
+              'flex-shrink:0;display:flex;align-items:center;justify-content:center">',
+              '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"',
+                ' fill="none" stroke="'+iClr+'" stroke-width="2">',
                 '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>',
                 '<polyline points="14 2 14 8 20 8"/>',
-                '<line x1="16" y1="13" x2="8" y2="13"/>',
-                '<line x1="16" y1="17" x2="8" y2="17"/>',
+                '<line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
               '</svg>',
             '</div>',
             '<div style="flex:1;min-width:0">',
-              '<div style="font-weight:600;color:#1e293b;font-size:14px;',
+              '<div style="font-size:14px;font-weight:700;color:#111827;',
                 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">',
-                _esc(display),
+                _esc(name), badge,
               '</div>',
-              '<div style="font-size:12px;color:#64748b;margin-top:3px">',
-                dateStr, ' às ', timeStr, ' · ', sizeKb, ' KB',
+              '<div style="font-size:11px;color:#6b7280;margin-top:2px">',
+                df,' · ',tf,' · ',kb,' KB',
               '</div>',
             '</div>',
           '</div>',
-          '<button class="_mm-share-btn" style="',
-            'width:100%;padding:11px;background:#25d366;color:white;border:none;',
-            'border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;',
-            'display:flex;align-items:center;justify-content:center;gap:7px">',
-            WA_ICON, ' Enviar via WhatsApp',
+
+          // WhatsApp send button
+          '<button class="_mmGB" style="',
+            'width:100%;padding:11px 0;border:none;border-radius:10px;cursor:pointer;',
+            'background:#25d366;color:white;',
+            'font-size:14px;font-weight:700;letter-spacing:.2px;',
+            'display:flex;align-items:center;justify-content:center;gap:8px;',
+            '-webkit-tap-highlight-color:transparent;',
+            'box-shadow:0 2px 8px rgba(37,211,102,0.3)">',
+            _wa(16),' Enviar via WhatsApp',
           '</button>',
         '</div>'
       ].join('');
     }).join('');
   }
 
-  function _onRouteChange() {
-    if (window.location.pathname === '/gallery') {
-      _createOverlay();
-    } else {
-      _removeOverlay();
-    }
+  // ── Route detection — polling + nav-tab click interception ────────────────────
+
+  function _isGallery() {
+    var p = window.location.pathname;
+    var h = window.location.hash;
+    return p === '/gallery' || h === '#/gallery' || h === '#gallery';
   }
 
-  // Hook React Router's History API
-  var _origPush    = history.pushState;
-  var _origReplace = history.replaceState;
-  history.pushState = function() {
-    _origPush.apply(this, arguments);
-    setTimeout(_onRouteChange, 80);
-  };
-  history.replaceState = function() {
-    _origReplace.apply(this, arguments);
-    setTimeout(_onRouteChange, 80);
-  };
-  window.addEventListener('popstate', function() { setTimeout(_onRouteChange, 80); });
+  function _check() {
+    var now = _isGallery();
+    if (now === _onGallery) return;
+    _onGallery = now;
+    if (now) { _show(); } else { _hide(); }
+  }
 
-  // Initial check after React has fully rendered
-  setTimeout(_onRouteChange, 350);
+  // Direct click interception on gallery nav link (most responsive)
+  function _hookNavLinks() {
+    // Try href="/gallery" (BrowserRouter) and href="#/gallery" (HashRouter)
+    var selectors = ['a[href="/gallery"]','a[href="#/gallery"]','a[href="#gallery"]'];
+    var found = false;
+    selectors.forEach(function(sel) {
+      var links = document.querySelectorAll(sel);
+      links.forEach(function(lnk) {
+        if (lnk._mmHooked) return;
+        lnk._mmHooked = true;
+        found = true;
+        lnk.addEventListener('click', function() { setTimeout(function() { _onGallery=false; _check(); }, 60); });
+      });
+    });
+    // Hook non-gallery links to dismiss overlay
+    var others = document.querySelectorAll('a[href]:not([href="/gallery"]):not([href="#/gallery"]):not([href="#gallery"])');
+    others.forEach(function(lnk) {
+      if (lnk._mmHooked) return;
+      lnk._mmHooked = true;
+      lnk.addEventListener('click', function() { setTimeout(function() { _onGallery=true; _check(); }, 60); });
+    });
+    return found;
+  }
+
+  // Polling (350ms) catches route changes that aren't via nav link clicks
+  setInterval(_check, 350);
+
+  // Try to hook nav links once React has rendered; retry if not found yet
+  setTimeout(function() {
+    if (!_hookNavLinks()) setTimeout(_hookNavLinks, 1000);
+    _check();
+  }, 900);
 })();
 ''';

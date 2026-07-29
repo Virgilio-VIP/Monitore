@@ -229,13 +229,19 @@ class MainActivity : FlutterActivity() {
 		val uriClipData = ClipData.newUri(contentResolver, "Arquivos do planejamento", uris.first()).apply {
 			for (index in 1 until uris.size) addItem(ClipData.Item(uris[index]))
 		}
+		// Fixed recipient — bypass WhatsApp contact picker
+		val targetJid = "5531999555117@s.whatsapp.net"
+
 		val intent = if (uris.size == 1) {
 			Intent(Intent.ACTION_SEND).apply {
 				type = shareMimeType
 				putExtra(Intent.EXTRA_STREAM, uris[0])
 				clipData = uriClipData
 				addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-				if (whatsappPackage != null) setPackage(whatsappPackage)
+				if (whatsappPackage != null) {
+					setPackage(whatsappPackage)
+					putExtra("jid", targetJid)
+				}
 			}
 		} else {
 			Intent(Intent.ACTION_SEND_MULTIPLE).apply {
@@ -244,7 +250,10 @@ class MainActivity : FlutterActivity() {
 				clipData = uriClipData
 				putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
 				addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-				if (whatsappPackage != null) setPackage(whatsappPackage)
+				if (whatsappPackage != null) {
+					setPackage(whatsappPackage)
+					putExtra("jid", targetJid)
+				}
 			}
 		}
 		return try {
@@ -264,48 +273,77 @@ class MainActivity : FlutterActivity() {
 
 	private fun listSavedPlans(): List<Map<String, Any>> {
 		val plans = mutableListOf<Map<String, Any>>()
+		android.util.Log.d("Monitore", "[listSavedPlans] SDK=${Build.VERSION.SDK_INT}")
+
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
 			val collection = MediaStore.Files.getContentUri("external")
 			val projection  = arrayOf(
 				MediaStore.Files.FileColumns.DISPLAY_NAME,
 				MediaStore.Files.FileColumns.DATE_ADDED,
-				MediaStore.Files.FileColumns.SIZE
+				MediaStore.Files.FileColumns.SIZE,
+				MediaStore.Files.FileColumns.RELATIVE_PATH
 			)
-			val selection     = "(${MediaStore.Files.FileColumns.RELATIVE_PATH} = ? OR " +
+			// Include both lowercase and capitalized variants — Android may normalise differently
+			val selection = "(${MediaStore.Files.FileColumns.RELATIVE_PATH} = ? OR " +
+				"${MediaStore.Files.FileColumns.RELATIVE_PATH} = ? OR " +
+				"${MediaStore.Files.FileColumns.RELATIVE_PATH} = ? OR " +
 				"${MediaStore.Files.FileColumns.RELATIVE_PATH} = ?) AND " +
 				"${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?"
-			val selectionArgs = arrayOf("Documents/monitore", "Documents/monitore/", "%.json")
-			val sortOrder     = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
-			contentResolver.query(collection, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
-				val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
-				val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
-				val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
-				while (cursor.moveToNext()) {
-					plans.add(mapOf(
-						"fileName" to cursor.getString(nameCol),
-						"dateMs"   to cursor.getLong(dateCol) * 1000L,
-						"size"     to cursor.getLong(sizeCol)
-					))
-				}
-			}
-		} else {
-			@Suppress("DEPRECATION")
-			val dir = File(
-				Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-				"monitore"
+			val selectionArgs = arrayOf(
+				"Documents/monitore", "Documents/monitore/",
+				"Documents/Monitore", "Documents/Monitore/",
+				"%.json"
 			)
-			if (dir.exists()) {
-				dir.listFiles { f -> f.name.endsWith(".json") }
-					?.sortedByDescending { it.lastModified() }
-					?.forEach { f ->
+			val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
+			try {
+				contentResolver.query(collection, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
+					android.util.Log.d("Monitore", "[listSavedPlans] MediaStore cursor count=${cursor.count}")
+					val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+					val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
+					val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+					val pathCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.RELATIVE_PATH)
+					while (cursor.moveToNext()) {
+						val name = cursor.getString(nameCol) ?: continue
+						val path = if (pathCol >= 0) cursor.getString(pathCol) else ""
+						android.util.Log.d("Monitore", "[listSavedPlans] found: $name path=$path")
 						plans.add(mapOf(
-							"fileName" to f.name,
-							"dateMs"   to f.lastModified(),
-							"size"     to f.length()
+							"fileName" to name,
+							"dateMs"   to cursor.getLong(dateCol) * 1000L,
+							"size"     to cursor.getLong(sizeCol)
 						))
 					}
+				}
+			} catch (e: Exception) {
+				android.util.Log.e("Monitore", "[listSavedPlans] MediaStore query error: ${e.message}", e)
 			}
 		}
+
+		// Filesystem fallback — works on all API levels; also covers cases where
+		// MediaStore indexing is delayed or path case differs from what we queried.
+		if (plans.isEmpty()) {
+			android.util.Log.d("Monitore", "[listSavedPlans] MediaStore empty, trying filesystem fallback")
+			val docsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+			for (dirName in listOf("monitore", "Monitore")) {
+				val dir = File(docsRoot, dirName)
+				android.util.Log.d("Monitore", "[listSavedPlans] checking dir: ${dir.absolutePath} exists=${dir.exists()}")
+				if (!dir.exists()) continue
+				dir.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".json") }
+					?.sortedByDescending { it.lastModified() }
+					?.forEach { f ->
+						if (plans.none { (it["fileName"] as? String) == f.name }) {
+							android.util.Log.d("Monitore", "[listSavedPlans] fs fallback found: ${f.name}")
+							plans.add(mapOf(
+								"fileName" to f.name,
+								"dateMs"   to f.lastModified(),
+								"size"     to f.length()
+							))
+						}
+					}
+				if (plans.isNotEmpty()) break
+			}
+		}
+
+		android.util.Log.d("Monitore", "[listSavedPlans] returning ${plans.size} plans")
 		return plans
 	}
 
